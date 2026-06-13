@@ -14,6 +14,7 @@
 """
 
 import argparse
+import io
 import sys
 import time
 import tempfile
@@ -226,6 +227,445 @@ class Benchmark:
         return self.results.get("api")
 
 
+# ── Concurrency / multi-user stress test ──
+
+import statistics
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def _build_test_csv(rows: int, cols: int, prefix: str = "") -> bytes:
+    """Build an in-memory CSV file for upload testing."""
+    import random
+    buf = io.StringIO()
+    headers = ["id"] + [f"col_{j:03d}" for j in range(cols - 1)]
+    buf.write(",".join(headers) + "\n")
+    for i in range(rows):
+        vals = [f"{prefix}{i:010d}"]
+        for j in range(cols - 1):
+            if j % 3 == 0:
+                vals.append(f"val_{random.randint(0, rows // 2):06d}")
+            elif j % 3 == 1:
+                vals.append(str(random.randint(0, 1_000_000)))
+            else:
+                vals.append(f"2024-{random.randint(1,12):02d}-{random.randint(1,28):02d}")
+        buf.write(",".join(vals) + "\n")
+    return buf.getvalue().encode("utf-8")
+
+
+def _single_user_workflow(
+    base_url: str,
+    rows: int,
+    cols: int,
+    user_id: int,
+    use_async: bool = True,
+) -> dict:
+    """Simulate one user's complete workflow: upload → parse → compare → detail.
+
+    Returns timing breakdown.
+    """
+    import requests
+
+    s = requests.Session()
+    timings = {}
+    t_start = time.perf_counter()
+
+    try:
+        # 1. Create session
+        r = s.get(f"{base_url}/api/files/new-session", timeout=5)
+        sid = r.json()["session_id"]
+
+        # 2. Upload file A
+        csv_a = _build_test_csv(rows, cols, prefix=f"u{user_id}_a_")
+        t0 = time.perf_counter()
+        r = s.post(
+            f"{base_url}/api/files/upload?session_id={sid}",
+            files={"file": (f"user{user_id}_a.csv", io.BytesIO(csv_a), "text/csv")},
+            timeout=300,
+        )
+        upload_resp = r.json()
+        fid_a = upload_resp["file_id"]
+        t1 = time.perf_counter()
+        timings["upload_a_s"] = round(t1 - t0, 2)
+
+        # 3. Poll until file A parsed
+        polls = 0
+        while True:
+            r = s.get(f"{base_url}/api/files/parse-status/{sid}/{fid_a}", timeout=10)
+            st = r.json()
+            polls += 1
+            if st["status"] == "complete":
+                break
+            if st["status"] == "error":
+                raise RuntimeError(f"Parse error: {st.get('error')}")
+            time.sleep(0.1)
+        timings["parse_a_s"] = round(time.perf_counter() - t1, 2)
+        timings["parse_a_polls"] = polls
+
+        # 4. Upload file B
+        csv_b = _build_test_csv(rows, cols, prefix=f"u{user_id}_b_")
+        t2 = time.perf_counter()
+        r = s.post(
+            f"{base_url}/api/files/upload?session_id={sid}",
+            files={"file": (f"user{user_id}_b.csv", io.BytesIO(csv_b), "text/csv")},
+            timeout=300,
+        )
+        fid_b = r.json()["file_id"]
+        t3 = time.perf_counter()
+        timings["upload_b_s"] = round(t3 - t2, 2)
+
+        # 5. Poll until file B parsed
+        polls = 0
+        while True:
+            r = s.get(f"{base_url}/api/files/parse-status/{sid}/{fid_b}", timeout=10)
+            st = r.json()
+            polls += 1
+            if st["status"] == "complete":
+                break
+            if st["status"] == "error":
+                raise RuntimeError(f"Parse error: {st.get('error')}")
+            time.sleep(0.1)
+        timings["parse_b_s"] = round(time.perf_counter() - t3, 2)
+        timings["parse_b_polls"] = polls
+
+        # 6. Read columns from session
+        r = s.get(f"{base_url}/api/files/session/{sid}", timeout=10)
+        session_info = r.json()
+        compare_cols = [
+            c for f in session_info["files"]
+            for c in f["columns"]
+            if c != "id"
+        ]
+        # Deduplicate while preserving order
+        seen = set()
+        compare_cols_dedup = []
+        for c in compare_cols:
+            if c not in seen:
+                seen.add(c)
+                compare_cols_dedup.append(c)
+
+        # 7. Set mappings
+        s.post(f"{base_url}/api/compare/mapping", json={
+            "session_id": sid,
+            "mappings": [
+                {"file_id": fid_a, "key_columns": ["id"]},
+                {"file_id": fid_b, "key_columns": ["id"]},
+            ],
+        }, timeout=10)
+
+        # 8. Execute comparison (async or sync)
+        t4 = time.perf_counter()
+        if use_async:
+            r = s.post(f"{base_url}/api/compare/execute-async", json={
+                "session_id": sid,
+                "compare_columns": compare_cols_dedup,
+                "mode": "all",
+            }, timeout=10)
+            task_id = r.json()["task_id"]
+
+            # Poll until complete
+            while True:
+                r = s.get(f"{base_url}/api/compare/status/{task_id}", timeout=10)
+                st = r.json()
+                if st["status"] == "complete":
+                    break
+                if st["status"] == "error":
+                    raise RuntimeError(f"Compare error: {st.get('error')}")
+                time.sleep(0.1)
+            compare_result = st["result"]
+        else:
+            r = s.post(f"{base_url}/api/compare/execute", json={
+                "session_id": sid,
+                "compare_columns": compare_cols_dedup,
+                "mode": "all",
+            }, timeout=600)
+            compare_result = r.json()
+        t5 = time.perf_counter()
+        timings["compare_s"] = round(t5 - t4, 2)
+
+        # 9. Query detail page
+        r = s.post(f"{base_url}/api/compare/detail", json={
+            "session_id": sid, "match_filter": "all", "page": 1, "page_size": 20,
+        }, timeout=30)
+        t6 = time.perf_counter()
+        timings["detail_s"] = round(t6 - t5, 4)
+
+        timings["total_s"] = round(time.perf_counter() - t_start, 2)
+        timings["total_keys"] = compare_result.get("total_keys", 0)
+        timings["matched"] = compare_result.get("matched", 0)
+        timings["success"] = True
+
+    except Exception as e:
+        timings["success"] = False
+        timings["error"] = str(e)[:120]
+        timings["total_s"] = round(time.perf_counter() - t_start, 2)
+
+    return timings
+
+
+def run_concurrent_test(
+    base_url: str = "http://127.0.0.1:8000",
+    users: int = 5,
+    rows: int = 5000,
+    cols: int = 20,
+    use_async: bool = True,
+):
+    """Run N simultaneous users through the full workflow.
+
+    Key metrics:
+      - Throughput: completed workflows / wall-clock time
+      - Latency distribution: p50, p95, p99 for total workflow time
+      - Success rate
+    """
+    import requests
+
+    # Quick health check
+    try:
+        r = requests.get(f"{base_url}/health", timeout=5)
+        if r.status_code != 200:
+            print(f"❌ Backend not healthy: {r.status_code}")
+            return
+    except Exception as e:
+        print(f"❌ Cannot reach backend at {base_url}: {e}")
+        print("   Please start the backend first: cd excel-compare && docker compose up -d")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"🔥 并发压力测试: {users} 用户同时操作")
+    print(f"   每用户数据: {rows:,} 行 × {cols} 列 × 2 表")
+    print(f"   比对模式: {'async (异步)' if use_async else 'sync (同步)'}")
+    print(f"{'='*70}")
+
+    wall_start = time.perf_counter()
+
+    # Launch all users in parallel
+    results = []
+    with ThreadPoolExecutor(max_workers=users, thread_name_prefix="bench-user") as pool:
+        futures = {
+            pool.submit(
+                _single_user_workflow, base_url, rows, cols, i, use_async
+            ): i
+            for i in range(users)
+        }
+        for future in as_completed(futures):
+            user_id = futures[future]
+            try:
+                result = future.result()
+                result["user_id"] = user_id
+                results.append(result)
+                status = "✅" if result.get("success") else "❌"
+                print(f"  [{status}] 用户 {user_id:2d}: "
+                      f"总耗时 {result.get('total_s', 0):.1f}s, "
+                      f"比对 {result.get('compare_s', 0):.1f}s, "
+                      f"keys={result.get('total_keys', '?')}")
+            except Exception as e:
+                print(f"  [❌] 用户 {user_id:2d}: {e}")
+                results.append({"user_id": user_id, "success": False, "error": str(e)[:120]})
+
+    wall_elapsed = time.perf_counter() - wall_start
+
+    # ── Statistics ──
+    successful = [r for r in results if r.get("success")]
+    failed = [r for r in results if not r.get("success")]
+
+    print(f"\n{'─'*70}")
+    print(f"📊 汇总统计")
+    print(f"{'─'*70}")
+    print(f"  总用户数:       {users}")
+    print(f"  成功:           {len(successful)}")
+    print(f"  失败:           {len(failed)}")
+    print(f"  总墙钟时间:     {wall_elapsed:.1f}s")
+    print(f"  吞吐量:         {len(successful) / wall_elapsed:.2f} workflows/s")
+
+    if successful:
+        totals = [r["total_s"] for r in successful]
+        compares = [r["compare_s"] for r in successful]
+        uploads = [r.get("upload_a_s", 0) + r.get("upload_b_s", 0) for r in successful]
+        parses = [r.get("parse_a_s", 0) + r.get("parse_b_s", 0) for r in successful]
+
+        totals.sort()
+        compares.sort()
+
+        def p(arr, n):
+            idx = int(len(arr) * n / 100)
+            return arr[min(idx, len(arr) - 1)]
+
+        print(f"\n  端到端延迟 (含上传+解析+比对+查询):")
+        print(f"    p50:  {p(totals, 50):.1f}s")
+        print(f"    p95:  {p(totals, 95):.1f}s")
+        print(f"    p99:  {p(totals, 99):.1f}s")
+        print(f"    avg:  {statistics.mean(totals):.1f}s")
+        print(f"    min:  {min(totals):.1f}s")
+        print(f"    max:  {max(totals):.1f}s")
+
+        print(f"\n  比对延迟:")
+        print(f"    p50:  {p(compares, 50):.1f}s")
+        print(f"    p95:  {p(compares, 95):.1f}s")
+        print(f"    avg:  {statistics.mean(compares):.1f}s")
+
+        print(f"\n  上传+解析延迟:")
+        up_parse = [u + p for u, p in zip(uploads, parses)]
+        up_parse.sort()
+        print(f"    avg:  {statistics.mean(up_parse):.1f}s")
+
+        # Concurrency efficiency: ideal vs actual
+        if len(successful) >= 2 and compares:
+            sum_compare = sum(compares)
+            ideal = sum_compare / max(2, users)  # with 2 workers, best case
+            actual_wall = wall_elapsed
+            efficiency = (sum_compare / actual_wall) * 100 if actual_wall > 0 else 0
+            print(f"\n  并发效率:")
+            print(f"    比对总CPU时间: {sum_compare:.1f}s")
+            print(f"    墙钟时间:      {actual_wall:.1f}s")
+            print(f"    并行效率:      {efficiency:.0f}% (vs ideal {users}×)")
+
+        print(f"\n  结论: ", end="")
+        if len(failed) == 0 and p(totals, 95) < 30:
+            print("✅ 并发性能良好，{users} 用户同时操作无异常")
+        elif len(failed) <= users * 0.1:
+            print(f"⚠️  部分用户失败 ({len(failed)}/{users})，需进一步排查")
+        else:
+            print(f"❌ 大量用户失败 ({len(failed)}/{users})，存在严重并发问题")
+
+    if failed:
+        print(f"\n  失败详情:")
+        for f in failed:
+            print(f"    用户 {f.get('user_id')}: {f.get('error', 'unknown')[:150]}")
+
+
+def run_load_test(
+    base_url: str = "http://127.0.0.1:8000",
+    duration_s: int = 30,
+    users: int = 5,
+):
+    """Sustained-load test: keep submitting compare requests for a fixed duration.
+
+    Measures sustained throughput and error rate under continuous load.
+    """
+    import requests
+
+    print(f"\n{'='*70}")
+    print(f"⏱️  持续负载测试: {users} 用户, {duration_s}s")
+    print(f"{'='*70}")
+
+    # First, prepare shared sessions with uploaded files
+    print("  准备测试数据...")
+    sessions = []
+    for i in range(users):
+        s = requests.Session()
+        r = s.get(f"{base_url}/api/files/new-session", timeout=5)
+        sid = r.json()["session_id"]
+
+        csv_a = _build_test_csv(3000, 15, prefix=f"load_a_{i}_")
+        csv_b = _build_test_csv(3000, 15, prefix=f"load_b_{i}_")
+
+        r = s.post(f"{base_url}/api/files/upload?session_id={sid}",
+                   files={"file": (f"la_{i}.csv", io.BytesIO(csv_a), "text/csv")}, timeout=300)
+        fid_a = r.json()["file_id"]
+
+        # Wait for parse
+        while True:
+            st = s.get(f"{base_url}/api/files/parse-status/{sid}/{fid_a}", timeout=10).json()
+            if st["status"] == "complete":
+                break
+            if st["status"] == "error":
+                break
+            time.sleep(0.1)
+
+        r = s.post(f"{base_url}/api/files/upload?session_id={sid}",
+                   files={"file": (f"lb_{i}.csv", io.BytesIO(csv_b), "text/csv")}, timeout=300)
+        fid_b = r.json()["file_id"]
+
+        while True:
+            st = s.get(f"{base_url}/api/files/parse-status/{sid}/{fid_b}", timeout=10).json()
+            if st["status"] == "complete":
+                break
+            if st["status"] == "error":
+                break
+            time.sleep(0.1)
+
+        r = s.get(f"{base_url}/api/files/session/{sid}", timeout=10)
+        cols = list(dict.fromkeys(
+            c for f in r.json()["files"] for c in f["columns"] if c != "id"
+        ))
+
+        s.post(f"{base_url}/api/compare/mapping", json={
+            "session_id": sid,
+            "mappings": [
+                {"file_id": fid_a, "key_columns": ["id"]},
+                {"file_id": fid_b, "key_columns": ["id"]},
+            ],
+        }, timeout=10)
+
+        sessions.append({"session": s, "sid": sid, "cols": cols})
+        print(f"    用户 {i}: session={sid}, cols={len(cols)}")
+
+    print(f"  准备完成，开始持续负载...")
+
+    # Track metrics
+    req_count = [0] * users
+    err_count = [0] * users
+    latencies: list[float] = []
+    stop_event = threading.Event()
+
+    def worker(user_idx: int):
+        sdata = sessions[user_idx]
+        s = sdata["session"]
+        sid = sdata["sid"]
+        cols = sdata["cols"]
+
+        while not stop_event.is_set():
+            t0 = time.perf_counter()
+            try:
+                r = s.post(f"{base_url}/api/compare/execute-async", json={
+                    "session_id": sid,
+                    "compare_columns": cols[:10],  # compare first 10 cols
+                    "mode": "all",
+                }, timeout=10)
+                task_id = r.json()["task_id"]
+                # Poll for completion
+                while not stop_event.is_set():
+                    r = s.get(f"{base_url}/api/compare/status/{task_id}", timeout=10)
+                    st = r.json()
+                    if st["status"] in ("complete", "error"):
+                        break
+                    time.sleep(0.2)
+                latencies.append(time.perf_counter() - t0)
+                req_count[user_idx] += 1
+                if st["status"] == "error":
+                    err_count[user_idx] += 1
+            except Exception:
+                err_count[user_idx] += 1
+                req_count[user_idx] += 1
+                latencies.append(time.perf_counter() - t0)
+
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(users)]
+    for t in threads:
+        t.start()
+
+    time.sleep(duration_s)
+    stop_event.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    total_req = sum(req_count)
+    total_err = sum(err_count)
+    print(f"\n  结果:")
+    print(f"    总请求数:   {total_req}")
+    print(f"    成功:       {total_req - total_err}")
+    print(f"    失败:       {total_err}")
+    print(f"    吞吐量:     {total_req / duration_s:.2f} req/s")
+
+    if latencies:
+        latencies.sort()
+        def p(arr, n):
+            return arr[min(int(len(arr) * n / 100), len(arr) - 1)]
+        print(f"    延迟 p50:   {p(latencies, 50):.1f}s")
+        print(f"    延迟 p95:   {p(latencies, 95):.1f}s")
+        print(f"    延迟 p99:   {p(latencies, 99):.1f}s")
+        print(f"    延迟 avg:   {statistics.mean(latencies):.1f}s")
+
+
 def run_scale_test():
     """递增压力测试，找出性能拐点。"""
     configs = [
@@ -270,7 +710,36 @@ def main():
     parser.add_argument("--scale", action="store_true", help="递增压力测试")
     parser.add_argument("--memory", action="store_true", help="测试后打印内存占用")
 
+    # Concurrency tests
+    parser.add_argument("--concurrent", type=int, default=0, metavar="N",
+                        help="并发测试: N 个用户同时执行完整工作流")
+    parser.add_argument("--sync", action="store_true",
+                        help="并发测试使用同步比对 (默认异步)")
+    parser.add_argument("--load", type=int, default=0, metavar="SECONDS",
+                        help="持续负载测试: 指定持续时间（秒）")
+    parser.add_argument("--load-users", type=int, default=5,
+                        help="持续负载测试的并发用户数")
+
     args = parser.parse_args()
+
+    # ── Concurrency tests (priority — skip other modes) ──
+    if args.concurrent > 0:
+        run_concurrent_test(
+            base_url=args.api_url,
+            users=args.concurrent,
+            rows=args.rows,
+            cols=args.cols,
+            use_async=not args.sync,
+        )
+        return
+
+    if args.load > 0:
+        run_load_test(
+            base_url=args.api_url,
+            duration_s=args.load,
+            users=args.load_users,
+        )
+        return
 
     if args.scale:
         run_scale_test()
