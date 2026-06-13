@@ -1,0 +1,32 @@
+# 加速提示：若 Docker 拉取镜像慢，请配置 Docker 镜像加速器：
+#   sudo tee /etc/docker/daemon.json << 'EOF'
+#   {
+#     "registry-mirrors": [
+#       "https://docker.1ms.run",
+#       "https://docker.xuanyuan.me"
+#     ]
+#   }
+#   EOF
+#   sudo systemctl restart docker
+#
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/uploads
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  uploads:
