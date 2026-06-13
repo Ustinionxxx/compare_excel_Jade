@@ -23,15 +23,9 @@ interface Props {
   dismissedColumns?: string[];
   /** 文件别名映射: label (A/B/C) -> alias name */
   labelAliases?: Record<string, string>;
+  /** 匹配类型展示文案: "only_a" → "仅 采购单 存在", ... */
+  matchTypeLabels: Record<string, string>;
 }
-
-const MATCH_FILTERS = [
-  { label: '全部', value: 'all' },
-  { label: '匹配成功', value: 'matched' },
-  { label: '仅表A存在', value: 'only_a' },
-  { label: '仅表B存在', value: 'only_b' },
-  { label: '仅表C存在', value: 'only_c' },
-];
 
 const DIFF_FILTERS = [
   { label: '全部', value: 'all' },
@@ -39,11 +33,24 @@ const DIFF_FILTERS = [
   { label: '值不同', value: 'different' },
 ];
 
+/** Build match filter options from dynamic labels (fallback to 仅A/仅B/仅C) */
+function buildMatchFilters(labels: Record<string, string>) {
+  const filters = [
+    { label: '全部', value: 'all' },
+    { label: labels.matched || '匹配成功', value: 'matched' },
+  ];
+  if (labels.only_a) filters.push({ label: labels.only_a, value: 'only_a' });
+  if (labels.only_b) filters.push({ label: labels.only_b, value: 'only_b' });
+  if (labels.only_c) filters.push({ label: labels.only_c, value: 'only_c' });
+  return filters;
+}
+
 export default function DiffTable({
   sessionId, compareColumns, compareResult,
   matchFilter, diffFilter, diffColumn, onFilterChange,
   dismissedColumns = [],
   labelAliases,
+  matchTypeLabels,
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<DetailQueryResponse>({ total: 0, page: 1, page_size: 50, rows: [] });
@@ -161,18 +168,7 @@ export default function DiffTable({
     }
   };
 
-  const matchTypeLabel = (mt: string) => {
-    switch (mt) {
-      case 'matched': return '✓ 匹配';
-      case 'only_a': return '仅 A';
-      case 'only_b': return '仅 B';
-      case 'only_c': return '仅 C';
-      case 'only_a_b': return 'A+B（缺C）';
-      case 'only_a_c': return 'A+C（缺B）';
-      case 'only_b_c': return 'B+C（缺A）';
-      default: return mt;
-    }
-  };
+  const matchTypeLabel = (mt: string) => matchTypeLabels[mt] || mt;
 
   const thStyle: React.CSSProperties = {
     padding: '8px 12px',
@@ -207,7 +203,7 @@ export default function DiffTable({
             size="small"
             value={matchFilter}
             onChange={v => onFilterChange({ match_filter: v })}
-            options={MATCH_FILTERS}
+            options={buildMatchFilters(matchTypeLabels)}
             style={{ width: 130 }}
           />
           <Select

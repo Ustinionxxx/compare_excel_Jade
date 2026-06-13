@@ -65,6 +65,7 @@ class CompareResponse(BaseModel):
     only_b: int = 0
     only_c: int | None = 0
     column_stats: list[dict[str, Any]]  # [{column, same, diff}]
+    match_type_labels: dict[str, str] = {}  # "only_a" → "仅 采购单 存在" etc.
 
 
 # ── Detail Query ──

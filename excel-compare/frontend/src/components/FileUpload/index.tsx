@@ -125,7 +125,7 @@ export default function FileUpload({ sessionId, onReady }: Props) {
             setParsingProgress(0);
             setParsingMessage('');
 
-            const defaultAlias = (status.file_name || fileName).replace(/\.(xlsx|xls)$/i, '');
+            const defaultAlias = (status.file_name || fileName).replace(/\.(xlsx|xls|csv)$/i, '');
             const newFile: FileInfo = {
               file_id: fileId,
               file_name: status.file_name || fileName,
@@ -292,7 +292,7 @@ export default function FileUpload({ sessionId, onReady }: Props) {
       title: '别名', key: 'alias',
       width: 200,
       render: (_: unknown, record: FileInfo) => {
-        const currentAlias = record.alias || record.file_name.replace(/\.(xlsx|xls)$/i, '');
+        const currentAlias = record.alias || record.file_name.replace(/\.(xlsx|xls|csv)$/i, '');
         if (editingAlias === record.file_id) {
           return (
             <Input
@@ -354,7 +354,7 @@ export default function FileUpload({ sessionId, onReady }: Props) {
   return (
     <div>
       <Title level={5} style={{ marginBottom: 16 }}>
-        上传 Excel 文件（支持 .xlsx / .xls，最多 3 个文件）
+        上传 Excel / CSV 文件（支持 .xlsx / .xls / .csv，最多 3 个文件）
       </Title>
 
       {/* Status banner */}
@@ -388,13 +388,13 @@ export default function FileUpload({ sessionId, onReady }: Props) {
       <Dragger
         customRequest={handleUpload}
         showUploadList={false}
-        accept=".xlsx,.xls"
+        accept=".xlsx,.xls,.csv"
         disabled={maxReached || isProcessing}
       >
         <p className="ant-upload-drag-icon"><InboxOutlined /></p>
         <p className="ant-upload-text">点击或拖拽 Excel 文件到此区域上传</p>
         <p className="ant-upload-hint">
-          支持 .xlsx 和 .xls 格式，单个文件最大 100 MB
+          支持 .xlsx / .xls / .csv 格式，单个文件最大 100 MB
           {files.length > 0 && `（已上传 ${files.length}/3 个）`}
         </p>
       </Dragger>

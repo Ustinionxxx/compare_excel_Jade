@@ -14,16 +14,19 @@ interface Props {
   matchFilter: string;
   diffFilter: string;
   diffColumn: string | null;
+  matchTypeLabels: Record<string, string>;
 }
 
 /** Build a human-readable label for the current filter combination */
-function filterLabel(matchFilter: string, diffFilter: string, diffColumn: string | null): string {
+function filterLabel(
+  matchFilter: string,
+  diffFilter: string,
+  diffColumn: string | null,
+  matchTypeLabels: Record<string, string>,
+): string {
   const parts: string[] = [];
   if (matchFilter !== 'all') {
-    const labels: Record<string, string> = {
-      matched: '匹配成功', only_a: '仅表A', only_b: '仅表B', only_c: '仅表C',
-    };
-    parts.push(labels[matchFilter] || matchFilter);
+    parts.push(matchTypeLabels[matchFilter] || matchFilter);
   }
   if (diffFilter !== 'all') {
     parts.push(diffFilter === 'different' ? '值不同' : '值相同');
@@ -34,7 +37,7 @@ function filterLabel(matchFilter: string, diffFilter: string, diffColumn: string
   return parts.length > 0 ? `（${parts.join(' · ')}）` : '';
 }
 
-export default function ExportBar({ sessionId, files, matchFilter, diffFilter, diffColumn }: Props) {
+export default function ExportBar({ sessionId, files, matchFilter, diffFilter, diffColumn, matchTypeLabels }: Props) {
   const [exporting, setExporting] = useState(false);
   const [includeDiffCols, setIncludeDiffCols] = useState(false);
 
@@ -72,10 +75,7 @@ export default function ExportBar({ sessionId, files, matchFilter, diffFilter, d
   const filteredFilename = () => {
     const parts = ['筛选结果'];
     if (matchFilter !== 'all') {
-      const labels: Record<string, string> = {
-        matched: '匹配成功', only_a: '仅A', only_b: '仅B', only_c: '仅C',
-      };
-      parts.push(labels[matchFilter] || matchFilter);
+      parts.push(matchTypeLabels[matchFilter] || matchFilter);
     }
     if (diffFilter !== 'all') {
       parts.push(diffFilter === 'different' ? '值不同' : '值相同');
@@ -124,7 +124,7 @@ export default function ExportBar({ sessionId, files, matchFilter, diffFilter, d
           <span>
             导出当前筛选结果
             <span style={{ fontSize: 11, color: '#999', marginLeft: 6 }}>
-              {filterLabel(matchFilter, diffFilter, diffColumn)}
+              {filterLabel(matchFilter, diffFilter, diffColumn, matchTypeLabels)}
             </span>
           </span>
         </Space>

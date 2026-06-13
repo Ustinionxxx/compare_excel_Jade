@@ -142,6 +142,7 @@ def execute_compare(req: CompareRequest):
         only_b=summary["only_b"],
         only_c=summary.get("only_c", 0),
         column_stats=summary["column_stats"],
+        match_type_labels=summary.get("match_type_labels", {}),
     )
 
 

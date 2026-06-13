@@ -264,6 +264,48 @@ class DiffEngine:
         self.only_b = int((match_type == f"only_{b_label}").sum())
         self.only_c = int((match_type == f"only_{c_label}").sum())
 
+    def _build_match_type_labels(self) -> dict[str, str]:
+        """Build display labels for match types using file aliases.
+
+        Generates a mapping from internal match_type keys ("only_a", "only_b", …)
+        to human-readable labels that use the user-set file aliases.
+
+        Examples (2 files):
+          "only_a" → "仅 采购单 存在"
+          "only_b" → "仅 销售单 存在"
+        Examples (3 files):
+          "only_a_b" → "采购单+销售单（缺库存单）"
+        """
+        file_ids = list(self.files.keys())
+        label_letters = {fid: chr(65 + i) for i, fid in enumerate(file_ids)}  # A, B, C
+
+        # Resolve display alias per file: user alias > filename stem > letter
+        aliases: dict[str, str] = {}
+        for fid, letter in label_letters.items():
+            info = self.files.get(fid, {})
+            alias = info.get("file_alias", "")
+            if not alias:
+                fname = info.get("file_name", "")
+                alias = Path(fname).stem if fname else f"{letter}表"
+            aliases[letter.lower()] = alias
+
+        labels: dict[str, str] = {"matched": "✓ 匹配"}
+
+        # Single-file-only labels
+        for letter_lower, alias in aliases.items():
+            labels[f"only_{letter_lower}"] = f"仅 {alias} 存在"
+
+        # 2-of-3 labels (only when 3 files uploaded)
+        if len(file_ids) >= 3:
+            combos = [("a", "b", "c"), ("a", "c", "b"), ("b", "c", "a")]
+            for x, y, z in combos:
+                labels[f"only_{x}_{y}"] = (
+                    f"{aliases.get(x, x.upper())}+{aliases.get(y, y.upper())}"
+                    f"（缺{aliases.get(z, z.upper())}）"
+                )
+
+        return labels
+
     def _make_summary(self) -> dict:
         return {
             "total_keys": self.total_keys,
@@ -272,6 +314,7 @@ class DiffEngine:
             "only_b": self.only_b,
             "only_c": self.only_c,
             "column_stats": self.column_stats,
+            "match_type_labels": self._build_match_type_labels(),
         }
 
     def get_detail_page(
@@ -381,6 +424,7 @@ class DiffEngine:
             "page": page,
             "page_size": page_size,
             "rows": rows_list if len(page_df) > 0 else [],
+            "match_type_labels": self._build_match_type_labels(),
         }
 
     def get_export_df(
@@ -466,9 +510,10 @@ class DiffEngine:
 
         result: OrderedDict[str, pd.Series] = OrderedDict()
 
-        # 1. Match type — Chinese labels (same as table)
+        # 1. Match type — dynamic labels using file aliases
+        _export_labels = self._build_match_type_labels()
         result["匹配类型"] = df["__match_type"].map(
-            lambda x: MATCH_TYPE_LABELS.get(x, x)
+            lambda x: _export_labels.get(x, x)
         )
 
         # 2. Key columns

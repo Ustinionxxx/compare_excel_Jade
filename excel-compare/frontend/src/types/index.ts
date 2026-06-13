@@ -39,6 +39,8 @@ export interface CompareResponse {
   only_b: number;
   only_c: number | null;
   column_stats: ColumnStat[];
+  /** "only_a" → "仅 采购单 存在", "only_b" → "仅 销售单 存在", ... */
+  match_type_labels: Record<string, string>;
 }
 
 export type MatchType = 'matched' | 'only_a' | 'only_b' | 'only_c';

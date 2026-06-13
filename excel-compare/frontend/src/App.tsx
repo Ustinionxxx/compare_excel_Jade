@@ -207,7 +207,7 @@ export default function App() {
   // Build label → alias mapping for display (A → "采购单", B → "采购单交期", etc.)
   const labelAliases = hasResult && files.length >= 2
     ? Object.fromEntries(
-        files.map((f, i) => [String.fromCharCode(65 + i), f.alias || f.file_name.replace(/\.(xlsx|xls)$/i, '')]),
+        files.map((f, i) => [String.fromCharCode(65 + i), f.alias || f.file_name.replace(/\.(xlsx|xls|csv)$/i, '')]),
       )
     : undefined;
 
@@ -233,6 +233,7 @@ export default function App() {
                 matchFilter={matchFilter}
                 diffFilter={diffFilter}
                 diffColumn={diffColumn}
+                matchTypeLabels={compareResult.match_type_labels || {}}
               />
             )}
             <Button icon={<ReloadOutlined />} onClick={handleReset}>重新开始</Button>
@@ -293,6 +294,7 @@ export default function App() {
                 dismissedColumns={dismissedColumns}
                 onDismissColumn={(col) => setDismissedColumns(prev => [...prev, col])}
                 onRestoreColumn={(col) => setDismissedColumns(prev => prev.filter(c => c !== col))}
+                matchTypeLabels={compareResult.match_type_labels || {}}
               />
             )}
           </Spin>
@@ -309,6 +311,7 @@ export default function App() {
                 onFilterChange={handleFilterChange}
                 dismissedColumns={dismissedColumns}
                 labelAliases={labelAliases}
+                matchTypeLabels={compareResult.match_type_labels || {}}
               />
             </div>
           )}

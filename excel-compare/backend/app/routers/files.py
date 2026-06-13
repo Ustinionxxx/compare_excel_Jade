@@ -121,8 +121,8 @@ async def upload_file(
         raise HTTPException(400, "No file provided")
 
     ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in (".xlsx", ".xls"):
-        raise HTTPException(400, f"Unsupported file type: {ext}. Only .xlsx and .xls are supported.")
+    if ext not in (".xlsx", ".xls", ".csv"):
+        raise HTTPException(400, f"Unsupported file type: {ext}. Only .xlsx, .xls and .csv are supported.")
 
     # 文件大小校验：最大 100 MB（与 nginx client_max_body_size 和前端限制保持一致）
     MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB

@@ -14,13 +14,17 @@ interface Props {
   onDismissColumn: (column: string) => void;
   onRestoreColumn: (column: string) => void;
   onDrill: (filter: { match_filter?: string; diff_filter?: string; diff_column?: string | null }) => void;
+  /** "only_a" → "仅 采购单 存在", ... */
+  matchTypeLabels: Record<string, string>;
 }
 
-export default function StatsBoard({ result, dismissedColumns, onDismissColumn, onRestoreColumn, onDrill }: Props) {
+export default function StatsBoard({ result, dismissedColumns, onDismissColumn, onRestoreColumn, onDrill, matchTypeLabels }: Props) {
   const [showOnlyDiffs, setShowOnlyDiffs] = useState(false);
 
   const hasC = result.only_c !== null && result.only_c !== undefined;
-  const labels = { a: '表A', b: '表B', c: '表C' };
+
+  /** Resolve a friendly label for a match_type key, falling back to 仅A/仅B/仅C */
+  const label = (key: string, fallback: string) => matchTypeLabels[key] || fallback;
 
   // Count columns with actual differences
   const diffColumnCount = useMemo(
@@ -44,7 +48,7 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
       style: { cursor: 'pointer' },
     },
     {
-      title: `仅 ${labels.a} 存在`,
+      title: label('only_a', '仅 A 存在'),
       value: result.only_a,
       color: '#faad14',
       icon: <FileOutlined />,
@@ -52,7 +56,7 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
       style: { cursor: 'pointer' },
     },
     {
-      title: `仅 ${labels.b} 存在`,
+      title: label('only_b', '仅 B 存在'),
       value: result.only_b,
       color: '#faad14',
       icon: <FileOutlined />,
@@ -63,7 +67,7 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
 
   if (hasC) {
     statCards.push({
-      title: `仅 ${labels.c} 存在`,
+      title: label('only_c', '仅 C 存在'),
       value: result.only_c || 0,
       color: '#faad14',
       icon: <FileOutlined />,
