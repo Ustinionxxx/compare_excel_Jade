@@ -6,6 +6,8 @@ import type {
   UploadResponse,
   ColumnMapping,
   CompareResponse,
+  CompareSubmitResponse,
+  CompareStatusResponse,
   DetailQueryResponse,
   SessionInfo,
 } from '../types';
@@ -107,6 +109,28 @@ export async function executeCompare(
     compare_columns: compareColumns,
     mode,
   });
+  return res.data;
+}
+
+// ── Async Compare (recommended for large files / multi-user scenarios) ──
+
+export async function executeCompareAsync(
+  sessionId: string,
+  compareColumns: string[],
+  mode: string = 'all',
+): Promise<CompareSubmitResponse> {
+  const res = await http.post('/compare/execute-async', {
+    session_id: sessionId,
+    compare_columns: compareColumns,
+    mode,
+  });
+  return res.data;
+}
+
+export async function getCompareStatus(
+  taskId: string,
+): Promise<CompareStatusResponse> {
+  const res = await http.get(`/compare/status/${taskId}`);
   return res.data;
 }
 

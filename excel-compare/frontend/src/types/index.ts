@@ -64,3 +64,21 @@ export interface SessionInfo {
   files: (FileInfo & { alias?: string })[];
   key_mappings: Record<string, string[]>;
 }
+
+// ── Async Compare ──
+
+export interface CompareSubmitResponse {
+  task_id: string;
+  session_id: string;
+  status: string;
+}
+
+export interface CompareStatusResponse {
+  task_id: string;
+  status: string;        // "started" | "merging" | "complete" | "error"
+  stage: string;
+  progress: number;       // 0-100
+  message: string;
+  result?: CompareResponse;  // populated when status === "complete"
+  error?: string;            // populated when status === "error"
+}

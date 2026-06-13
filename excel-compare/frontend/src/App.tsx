@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Layout, Typography, Steps, Button, Space, message, Spin,
   ConfigProvider, theme, Alert,
@@ -10,7 +10,7 @@ import ColumnSelect from './components/ColumnSelect';
 import StatsBoard from './components/StatsBoard';
 import DiffTable from './components/DiffTable';
 import ExportBar from './components/ExportBar';
-import { newSession, executeCompare, setColumnMapping } from './api';
+import { newSession, setColumnMapping, executeCompareAsync, getCompareStatus } from './api';
 import type {
   FileInfo, ColumnMapping as ColumnMappingType,
   CompareResponse, DetailRow,
@@ -29,7 +29,14 @@ export default function App() {
   const [compareColumns, setCompareColumns] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<CompareResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [comparing, setComparing] = useState(false);
+  const [compareProgress, setCompareProgress] = useState<{
+    stage: string;
+    progress: number;
+    message: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Detail drill-down / filter state (lifted for ExportBar sync) ──
   const [matchFilter, setMatchFilter] = useState<string>('all');
@@ -90,11 +97,20 @@ export default function App() {
 
   const runCompare = useCallback(async (columns: string[], mode: string = 'all') => {
     setLoading(true);
+    setComparing(true);
+    setCompareProgress({ stage: 'preparing', progress: 5, message: '准备比对...' });
     setError(null);
     setDismissedColumns([]);
     setMatchFilter('all');
     setDiffFilter('all');
     setDiffColumn(null);
+
+    // Clean up any previous polling
+    if (pollingRef.current) {
+      clearTimeout(pollingRef.current);
+      pollingRef.current = null;
+    }
+
     try {
       // Ensure mappings are in sync with actual uploaded files
       const validFileIds = new Set(files.map(f => f.file_id));
@@ -117,18 +133,56 @@ export default function App() {
       }
 
       await setColumnMapping(sessionId, mappingsToSend);
-      const result = await executeCompare(sessionId, columns, mode);
-      setCompareColumns(columns);
-      setCompareResult(result);
-      setCurrentStep(3);
+      setCompareProgress({ stage: 'submitting', progress: 10, message: '提交比对任务...' });
+
+      // Submit async compare task
+      const { task_id } = await executeCompareAsync(sessionId, columns, mode);
+
+      // Poll for progress
+      await new Promise<void>((resolve, reject) => {
+        const poll = async () => {
+          try {
+            const status = await getCompareStatus(task_id);
+
+            setCompareProgress({
+              stage: status.stage,
+              progress: status.progress,
+              message: status.message,
+            });
+
+            if (status.status === 'complete' && status.result) {
+              setCompareColumns(columns);
+              setCompareResult(status.result);
+              setCurrentStep(3);
+              resolve();
+            } else if (status.status === 'error') {
+              reject(new Error(status.error || status.message || '比对执行失败'));
+            } else {
+              // Still running — poll again in 600ms
+              pollingRef.current = setTimeout(poll, 600);
+            }
+          } catch (err: any) {
+            reject(err);
+          }
+        };
+        poll();
+      });
     } catch (e: any) {
-      setError('比对执行失败: ' + (e.response?.data?.detail || e.message));
+      const msg = e.response?.data?.detail || e.message || String(e);
+      setError('比对执行失败: ' + msg);
     } finally {
       setLoading(false);
+      setComparing(false);
+      setCompareProgress(null);
     }
   }, [sessionId, keyMappings, files]);
 
   const handleReset = useCallback(() => {
+    // Stop any in-progress polling
+    if (pollingRef.current) {
+      clearTimeout(pollingRef.current);
+      pollingRef.current = null;
+    }
     setFiles([]);
     setKeyMappings([]);
     setCompareColumns([]);
@@ -138,6 +192,8 @@ export default function App() {
     setDiffColumn(null);
     setDismissedColumns([]);
     setError(null);
+    setComparing(false);
+    setCompareProgress(null);
     // 必须先创建新 session，再切换到步骤 0，
     // 否则 FileUpload 会用旧 sessionId 恢复旧文件导致 session/文件不一致
     newSession().then(newId => {
@@ -199,7 +255,15 @@ export default function App() {
             style={{ marginBottom: 24 }}
           />
 
-          <Spin spinning={loading} tip="正在比对中...">
+          <Spin
+            spinning={loading}
+            tip={
+              comparing && compareProgress
+                ? `${compareProgress.message} (${compareProgress.progress}%)`
+                : '正在比对中...'
+            }
+            percent={comparing && compareProgress ? compareProgress.progress : undefined}
+          >
             {currentStep === 0 && (
               <FileUpload
                 sessionId={sessionId}
