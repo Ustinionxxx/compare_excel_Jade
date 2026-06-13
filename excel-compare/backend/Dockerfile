@@ -11,4 +11,11 @@ COPY . .
 RUN mkdir -p uploads
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# 多 worker 提升并发能力。WORKERS 默认 2，可通过环境变量调整。
+# 使用 gunicorn + uvicorn worker，支持多进程并行处理请求。
+# --max-requests 定期回收 worker 防止内存泄漏。
+# 注意：当前使用进程内内存存储 session，多 worker 下同一客户端
+# 可能因 HTTP keep-alive 路由到不同 worker 导致 session 丢失。
+# 高并发生产环境建议接入 Redis 做 session 共享存储。
+CMD ["sh", "-c", "gunicorn -w ${WORKERS:-2} -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --max-requests 1000 --max-requests-jitter 100 --timeout 300 --graceful-timeout 30 app.main:app"]

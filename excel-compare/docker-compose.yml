@@ -19,6 +19,8 @@ services:
       - uploads:/app/uploads
     environment:
       - PYTHONUNBUFFERED=1
+      - WORKERS=${WORKERS:-2}
+    restart: unless-stopped
 
   frontend:
     build:
