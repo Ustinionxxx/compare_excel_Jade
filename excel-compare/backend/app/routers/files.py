@@ -1,9 +1,11 @@
 """File upload and management routes."""
 from __future__ import annotations
 
+import logging
 import os
 import threading
-from dataclasses import dataclass, field
+import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +14,9 @@ from pydantic import BaseModel
 
 from app.models import UploadResponse, RemoveFileRequest, SetFileAliasRequest
 from app.services import parser
-from app.services.matcher import create_session, get_session, remove_session
+from app.services.matcher import create_session, get_session, remove_session, persist_session
+
+_logger = logging.getLogger("excel_compare.files")
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -46,11 +50,17 @@ def _cleanup_progress(session_id: str, file_id: str):
 
 
 def _parse_file_background(session_id: str, file_id: str, saved_path: str, file_name: str):
-    """Background task: parse Excel file and update progress at each stage."""
+    """Background task: parse Excel file and update progress at each stage.
+
+    Progress is reported through _parse_progress (in-memory) and the session is
+    persisted to disk on completion/error so that cross-worker polling works.
+    """
+    _logger.info("Parse thread started: session=%s file=%s path=%s", session_id, file_id, saved_path)
     try:
         # Check if the file was removed while we were waiting to start
         engine = get_session(session_id)
         if engine is None or file_id not in engine.files:
+            _logger.warning("Parse thread: session or file gone session=%s file=%s", session_id, file_id)
             _set_progress(session_id, file_id, stage="error", message="文件已被移除", error="File removed")
             parser.remove_file(saved_path)
             return
@@ -59,7 +69,9 @@ def _parse_file_background(session_id: str, file_id: str, saved_path: str, file_
 
         # The heavy work: parse_excel reads all sheets
         _set_progress(session_id, file_id, stage="parsing_rows", progress=50, message="正在解析数据行...")
+        _logger.info("Parse thread: calling parse_excel for %s", saved_path)
         sheet_names, dataframes = parser.parse_excel(saved_path)
+        _logger.info("Parse thread: parse_excel done, %d sheets", len(sheet_names))
 
         _set_progress(session_id, file_id, stage="validating_columns", progress=80, message="校验列名...")
         first_sheet = sheet_names[0]
@@ -78,6 +90,9 @@ def _parse_file_background(session_id: str, file_id: str, saved_path: str, file_
             })
             if existing_alias:
                 engine.files[file_id]["file_alias"] = existing_alias
+            # Persist updated session to disk for cross-worker visibility
+            _logger.info("Parse thread: persisting session %s", session_id)
+            persist_session(session_id)
 
         _set_progress(
             session_id, file_id,
@@ -90,12 +105,18 @@ def _parse_file_background(session_id: str, file_id: str, saved_path: str, file_
                 "total_rows": total,
             },
         )
+        _logger.info("Parse thread completed OK: session=%s file=%s rows=%d", session_id, file_id, total)
     except Exception as e:
+        _logger.error("Parse thread failed: session=%s file=%s error=%s\n%s",
+                       session_id, file_id, e, traceback.format_exc())
         _set_progress(session_id, file_id, stage="error", message=f"解析失败: {e}", error=str(e))
         # Clean up engine entry and disk file on failure
         engine = get_session(session_id)
         if engine:
             engine.files.pop(file_id, None)
+            # CRITICAL: persist session after removing file so other workers
+            # see the updated state (file removed) instead of stale parsing:True
+            persist_session(session_id)
         parser.remove_file(saved_path)
 
 
@@ -161,6 +182,9 @@ async def upload_file(
         "parsing": True,
     }
 
+    # Persist to disk for cross-worker visibility
+    persist_session(session_id)
+
     # Setup parse progress and start background parsing
     progress = ParseProgress(stage="file_saved", progress=5, message="文件已保存，开始解析...")
     with _parse_lock:
@@ -183,25 +207,45 @@ async def upload_file(
 
 @router.get("/parse-status/{session_id}/{file_id}")
 def get_parse_status(session_id: str, file_id: str):
-    """Poll parsing progress for a file."""
+    """Poll parsing progress for a file.
+
+    Tries in-memory progress first, then falls back to the session's file
+    record. The filesystem-backed session store ensures this works across
+    gunicorn workers — a parse started on Worker A can be polled from
+    Worker B.
+    """
     with _parse_lock:
         progress = _parse_progress.get((session_id, file_id))
 
     if not progress:
-        # Check if file is already registered and fully parsed (session restore path)
+        # Progress not in this worker's memory — may be on another worker,
+        # or the session was restored after a restart. Check the session.
         engine = get_session(session_id)
-        if engine and file_id in engine.files and not engine.files[file_id].get("parsing", False):
+        if engine and file_id in engine.files:
             info = engine.files[file_id]
-            return {
-                "file_id": file_id,
-                "status": "complete",
-                "stage": "complete",
-                "progress": 100,
-                "message": "解析完成",
-                "file_name": info["file_name"],
-                "columns": info["columns"],
-                "total_rows": len(info["df"]),
-            }
+            if not info.get("parsing", False):
+                # Fully parsed
+                return {
+                    "file_id": file_id,
+                    "status": "complete",
+                    "stage": "complete",
+                    "progress": 100,
+                    "message": "解析完成",
+                    "file_name": info["file_name"],
+                    "columns": info["columns"],
+                    "total_rows": len(info.get("df") or []),
+                }
+            else:
+                # Still parsing on another worker — return a synthetic
+                # "parsing" status so the frontend keeps polling instead
+                # of treating this as an error.
+                return {
+                    "file_id": file_id,
+                    "status": "parsing",
+                    "stage": "reading_file",
+                    "progress": 25,
+                    "message": "正在解析中...",
+                }
         raise HTTPException(404, "Parse progress not found for this file")
 
     resp: dict[str, Any] = {
@@ -242,6 +286,8 @@ def remove_file(req: RemoveFileRequest):
         parser.remove_file(info.get("path"))
     # Also clean up the key mapping for this file ID
     engine.key_mappings.pop(req.file_id, None)
+    # Persist to disk for cross-worker visibility
+    persist_session(req.session_id)
     return {"status": "removed", "file_id": req.file_id}
 
 
@@ -283,4 +329,6 @@ def set_file_alias(req: SetFileAliasRequest):
     if not req.alias or not req.alias.strip():
         raise HTTPException(400, "Alias cannot be empty")
     engine.set_file_alias(req.file_id, req.alias.strip())
+    # Persist to disk for cross-worker visibility
+    persist_session(req.session_id)
     return {"status": "ok", "file_id": req.file_id, "alias": req.alias.strip()}

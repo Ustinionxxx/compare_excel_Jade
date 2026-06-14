@@ -1,0 +1,3 @@
+# Runtime session & task data (filesystem-shared across gunicorn workers)
+excel-compare/backend/uploads/sessions/
+excel-compare/backend/uploads/compare_tasks/

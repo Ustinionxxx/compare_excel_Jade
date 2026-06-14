@@ -1,6 +1,9 @@
 """Multi-table match & diff engine."""
 from __future__ import annotations
 
+import logging
+import os
+import pickle as _pickle
 import threading
 import time
 import uuid
@@ -10,6 +13,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+_logger = logging.getLogger("excel_compare.matcher")
 
 
 # Match type labels matching the frontend table display
@@ -657,17 +662,72 @@ class DiffEngine:
         return result[columns]
 
 
-# In-memory session store with TTL-based expiry
+# In-memory session store with TTL-based expiry and filesystem fallback.
+# Filesystem storage is critical for multi-worker (gunicorn) deployments:
+# a session created on Worker A is pickled to disk, and Worker B can
+# load it from disk when it receives a request for that session.
 
 # Default session TTL: 30 minutes of inactivity
 SESSION_TTL_SECONDS = 30 * 60
 # Cleanup interval: run garbage collection every 5 minutes
 _CLEANUP_INTERVAL = 5 * 60
 
+_SESSIONS_DIR = Path(__file__).resolve().parent.parent.parent / "uploads" / "sessions"
+
 _sessions: dict[str, DiffEngine] = {}
 _session_last_access: dict[str, float] = {}  # session_id -> last access timestamp
+_session_cached_at: dict[str, float] = {}  # session_id -> file mtime at cache time (for staleness check)
+_session_cached_size: dict[str, int] = {}  # session_id -> file size at cache time (extra staleness check)
 _sessions_lock = threading.Lock()
 _cleanup_started = False
+
+
+def _session_file(session_id: str) -> Path:
+    """Return the pickle path for a session."""
+    safe_id = session_id.replace("/", "_").replace("\\", "_")
+    return _SESSIONS_DIR / f"{safe_id}.pickle"
+
+
+def _save_session_to_disk(session_id: str, engine: DiffEngine) -> None:
+    """Persist a session to disk so other workers can access it."""
+    try:
+        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _session_file(session_id).with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            _pickle.dump(engine, f, protocol=_pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, _session_file(session_id))
+    except Exception as e:
+        _logger.warning("Failed to persist session %s to disk: %s", session_id, e)
+
+
+def _load_session_from_disk(session_id: str) -> DiffEngine | None:
+    """Try to load a session from disk (cross-worker fallback).
+
+    Also touches the file's mtime so that cleanup threads on other workers
+    can see this session is still alive — prevents premature deletion of
+    the shared pickle file.
+    """
+    try:
+        path = _session_file(session_id)
+        if path.exists():
+            # Update mtime to signal "this session is in use" to other workers'
+            # cleanup threads (cheap metadata-only operation).
+            os.utime(path, None)
+            with open(path, "rb") as f:
+                return _pickle.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _delete_session_from_disk(session_id: str) -> None:
+    """Remove a session pickle file."""
+    try:
+        path = _session_file(session_id)
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
 
 
 def _touch_session(session_id: str):
@@ -678,7 +738,14 @@ def _touch_session(session_id: str):
 
 
 def _cleanup_expired_sessions():
-    """Remove sessions that have exceeded the TTL."""
+    """Remove sessions that have exceeded the TTL.
+
+    Checks BOTH the in-memory last_access time AND the pickle file's mtime
+    on disk.  The disk check is critical: Worker A must not delete a session
+    pickle file that Worker B is still actively using (and updating via
+    persist_session).  Only when BOTH indicators show expiry is it safe to
+    delete the shared file.
+    """
     now = time.time()
     with _sessions_lock:
         expired = [
@@ -686,8 +753,29 @@ def _cleanup_expired_sessions():
             if now - last_access > SESSION_TTL_SECONDS
         ]
         for sid in expired:
+            # Before deleting the shared pickle file, check whether another
+            # worker recently touched it (via persist_session).  If the file
+            # mtime indicates recent activity, skip cleanup — another worker
+            # is still using this session.
+            try:
+                pf = _session_file(sid)
+                if pf.exists():
+                    file_age = now - pf.stat().st_mtime
+                    if file_age < SESSION_TTL_SECONDS:
+                        # Another worker touched this file recently — do NOT
+                        # delete it.  Just remove our stale local cache entry.
+                        _sessions.pop(sid, None)
+                        _session_last_access.pop(sid, None)
+                        _session_cached_at.pop(sid, None)
+                        _session_cached_size.pop(sid, None)
+                        continue
+            except Exception:
+                pass
+
             engine = _sessions.pop(sid, None)
             _session_last_access.pop(sid, None)
+            _session_cached_at.pop(sid, None)
+            _session_cached_size.pop(sid, None)
             # Clean up uploaded files on disk
             if engine:
                 for info in engine.files.values():
@@ -697,6 +785,8 @@ def _cleanup_expired_sessions():
                             Path(path).unlink(missing_ok=True)
                         except OSError:
                             pass
+            # Clean up session pickle
+            _delete_session_from_disk(sid)
 
 
 def _start_cleanup_timer():
@@ -720,23 +810,119 @@ def _start_cleanup_timer():
 
 
 def get_session(session_id: str) -> DiffEngine | None:
+    """Get a session, falling back to disk for cross-worker access.
+
+    CRITICAL: on cache hit, checks whether the pickle file on disk was
+    modified since we cached the session.  Uses BOTH mtime AND file size
+    — on filesystems with coarse mtime granularity (WSL2, NFS, ...) the
+    mtime may not change for rapid writes, but the file size will differ
+    because the pickle payload changes (e.g. when a file is added).
+    """
     _start_cleanup_timer()
     engine = _sessions.get(session_id)
-    if engine:
+    if engine is not None:
+        now = time.time()
+        cached_mtime = _session_cached_at.get(session_id)
+        cached_size = _session_cached_size.get(session_id)
+        if cached_mtime is not None:
+            try:
+                pf = _session_file(session_id)
+                if pf.exists():
+                    st = pf.stat()
+                    # Check BOTH mtime and size — either changing means
+                    # another worker persisted a new version.
+                    mtime_changed = st.st_mtime != cached_mtime
+                    size_changed = cached_size is not None and st.st_size != cached_size
+                    if mtime_changed or size_changed:
+                        _logger.debug("Session %s cache is stale (mtime:%s size:%s), reloading",
+                                      session_id,
+                                      "changed" if mtime_changed else "same",
+                                      "changed" if size_changed else "same")
+                        fresh = _load_session_from_disk(session_id)
+                        if fresh is not None:
+                            with _sessions_lock:
+                                _sessions[session_id] = fresh
+                                _session_last_access[session_id] = now
+                                _session_cached_at[session_id] = st.st_mtime
+                                _session_cached_size[session_id] = st.st_size
+                            return fresh
+            except Exception:
+                pass  # If we can't check, trust the cache
+
         _touch_session(session_id)
-    return engine
+        return engine
+
+    # Cache miss — try loading from disk (may have been created by another worker)
+    engine = _load_session_from_disk(session_id)
+    if engine is not None:
+        now = time.time()
+        with _sessions_lock:
+            if session_id not in _sessions:
+                _sessions[session_id] = engine
+                _session_last_access[session_id] = now
+                # Record the file metadata we loaded
+                try:
+                    pf = _session_file(session_id)
+                    if pf.exists():
+                        st = pf.stat()
+                        _session_cached_at[session_id] = st.st_mtime
+                        _session_cached_size[session_id] = st.st_size
+                except Exception:
+                    _session_cached_at[session_id] = now
+        return engine
+    return None
 
 
 def create_session() -> str:
     _start_cleanup_timer()
     session_id = uuid.uuid4().hex[:16]
+    engine = DiffEngine()
+    now = time.time()
     with _sessions_lock:
-        _sessions[session_id] = DiffEngine()
-        _session_last_access[session_id] = time.time()
+        _sessions[session_id] = engine
+        _session_last_access[session_id] = now
+    # Persist to disk so other workers can find this session
+    _save_session_to_disk(session_id, engine)
+    # Record the file's actual metadata after writing
+    try:
+        pf = _session_file(session_id)
+        if pf.exists():
+            st = pf.stat()
+            with _sessions_lock:
+                _session_cached_at[session_id] = st.st_mtime
+                _session_cached_size[session_id] = st.st_size
+    except Exception:
+        with _sessions_lock:
+            _session_cached_at[session_id] = now
     return session_id
+
+
+def persist_session(session_id: str) -> None:
+    """If the session is in local cache, flush it to disk.
+
+    Call this after any mutation to the session (key mappings, file add/remove)
+    so that other gunicorn workers can pick up the latest state.
+    """
+    with _sessions_lock:
+        engine = _sessions.get(session_id)
+    if engine is not None:
+        _save_session_to_disk(session_id, engine)
+        # Record the file's actual metadata so we can detect external changes
+        try:
+            pf = _session_file(session_id)
+            if pf.exists():
+                st = pf.stat()
+                with _sessions_lock:
+                    _session_cached_at[session_id] = st.st_mtime
+                    _session_cached_size[session_id] = st.st_size
+        except Exception:
+            pass
 
 
 def remove_session(session_id: str):
     with _sessions_lock:
         _sessions.pop(session_id, None)
         _session_last_access.pop(session_id, None)
+        _session_cached_at.pop(session_id, None)
+        _session_cached_size.pop(session_id, None)
+    _delete_session_from_disk(session_id)
