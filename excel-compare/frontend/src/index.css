@@ -1,32 +1,689 @@
-* {
+/* ═══════════════════════════════════════════════════════════════════════════
+   Jade Design System — Global Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Jade Primary Palette ── */
+  --jade-50: #ecfdf5;
+  --jade-100: #d1fae5;
+  --jade-200: #a7f3d0;
+  --jade-300: #6ee7b7;
+  --jade-400: #34d399;
+  --jade-500: #10b981;
+  --jade-600: #059669;
+  --jade-700: #047857;
+  --jade-800: #065f46;
+  --jade-900: #064e3b;
+
+  /* ── Neutral Palette ── */
+  --gray-50: #f8fafc;
+  --gray-100: #f1f5f9;
+  --gray-200: #e2e8f0;
+  --gray-300: #cbd5e1;
+  --gray-400: #94a3b8;
+  --gray-500: #64748b;
+  --gray-600: #475569;
+  --gray-700: #334155;
+  --gray-800: #1e293b;
+  --gray-900: #0f172a;
+
+  /* ── Semantic Colors ── */
+  --color-primary: var(--jade-600);
+  --color-primary-hover: var(--jade-700);
+  --color-primary-light: var(--jade-50);
+  --color-primary-border: var(--jade-200);
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+
+  /* ── Layout Tokens ── */
+  --header-height: 60px;
+  --content-max-width: 1400px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.04);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.08), 0 8px 10px -6px rgb(0 0 0 / 0.04);
+
+  /* ── Transition ── */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Reset & Base
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, 'Noto Sans', sans-serif;
-  background: #f5f5f5;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  background: var(--gray-50);
+  color: var(--gray-800);
+  line-height: 1.6;
+  min-height: 100vh;
 }
 
 #root {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
-/* AG Grid overrides for compact display */
+/* ═══════════════════════════════════════════════════════════════════════════
+   Background Pattern (subtle dot grid)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.bg-pattern {
+  position: relative;
+}
+
+.bg-pattern::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle,
+    rgb(5 150 105 / 0.03) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Header
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.app-header {
+  position: sticky !important;
+  top: 0;
+  z-index: 100;
+  background: linear-gradient(
+    135deg,
+    var(--jade-700) 0%,
+    var(--jade-600) 40%,
+    var(--jade-500) 100%
+  ) !important;
+  border-bottom: none !important;
+  box-shadow: var(--shadow-lg);
+  padding: 0 32px !important;
+}
+
+.app-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--jade-300) 20%,
+    var(--jade-200) 50%,
+    var(--jade-300) 80%,
+    transparent 100%
+  );
+}
+
+.header-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-logo-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #fff 0%, var(--jade-100) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  flex-shrink: 0;
+}
+
+.header-logo-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.header-title {
+  color: #fff !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.15);
+}
+
+.header-subtitle {
+  color: rgb(255 255 255 / 0.75);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.3px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-actions .ant-btn {
+  border-color: rgb(255 255 255 / 0.3);
+  color: #fff;
+  background: rgb(255 255 255 / 0.1);
+  backdrop-filter: blur(8px);
+  transition: all var(--transition-fast);
+}
+
+.header-actions .ant-btn:hover {
+  border-color: rgb(255 255 255 / 0.6) !important;
+  background: rgb(255 255 255 / 0.2) !important;
+  color: #fff !important;
+}
+
+.header-actions .ant-btn-primary {
+  background: #fff !important;
+  color: var(--jade-700) !important;
+  border-color: #fff !important;
+  font-weight: 600;
+}
+
+.header-actions .ant-btn-primary:hover {
+  background: var(--jade-50) !important;
+  color: var(--jade-800) !important;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.15);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Content Area
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.app-content {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  padding: 32px 24px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Welcome / Empty State
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.welcome-hero {
+  text-align: center;
+  padding: 64px 24px 48px;
+  animation: fadeInUp 0.6s var(--transition-slow) both;
+}
+
+.welcome-hero-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 24px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--jade-100) 0%, var(--jade-200) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  box-shadow: 0 8px 32px rgb(5 150 105 / 0.15);
+}
+
+.welcome-hero h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--gray-800);
+  margin-bottom: 8px;
+}
+
+.welcome-hero p {
+  font-size: 15px;
+  color: var(--gray-500);
+  max-width: 500px;
+  margin: 0 auto 32px;
+  line-height: 1.7;
+}
+
+.welcome-features {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 32px;
+}
+
+.welcome-feature-card {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  width: 200px;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--gray-100);
+  transition: all var(--transition-base);
+}
+
+.welcome-feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--jade-200);
+}
+
+.welcome-feature-card .feature-icon {
+  font-size: 32px;
+  margin-bottom: 12px;
+}
+
+.welcome-feature-card .feature-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gray-700);
+  margin-bottom: 4px;
+}
+
+.welcome-feature-card .feature-desc {
+  font-size: 12px;
+  color: var(--gray-400);
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Steps
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-steps {
+  padding: 20px 24px;
+  background: #fff;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 24px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Cards
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-card {
+  border-radius: var(--radius-lg) !important;
+  border: 1px solid var(--gray-100) !important;
+  transition: all var(--transition-base);
+}
+
+.ant-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.ant-card-small > .ant-card-head {
+  border-bottom: 1px solid var(--gray-100) !important;
+}
+
+/* Stat cards on results page */
+.stat-card {
+  border-radius: var(--radius-lg) !important;
+  transition: all var(--transition-base);
+  border: 1px solid var(--gray-100) !important;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg) !important;
+}
+
+.stat-card-clickable {
+  cursor: pointer;
+}
+
+.stat-card-clickable:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Upload Dragger
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-upload-drag {
+  border-radius: var(--radius-lg) !important;
+  border: 2px dashed var(--gray-200) !important;
+  transition: all var(--transition-base) !important;
+  background: #fff !important;
+}
+
+.ant-upload-drag:hover {
+  border-color: var(--jade-400) !important;
+  background: var(--jade-50) !important;
+}
+
+.ant-upload-drag .ant-upload-drag-icon .anticon {
+  color: var(--jade-500) !important;
+  font-size: 48px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tables
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-table-wrapper {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.ant-table-thead > tr > th {
+  background: var(--gray-50) !important;
+  color: var(--gray-600) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  border-bottom: 1px solid var(--gray-200) !important;
+}
+
+.ant-table-tbody > tr:hover > td {
+  background: var(--jade-50) !important;
+}
+
+/* Dismissed rows in stats table */
+.stats-row-dismissed {
+  opacity: 0.45;
+  background: var(--gray-50);
+  text-decoration: line-through;
+}
+
+.stats-row-dismissed td {
+  color: var(--gray-400) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Buttons
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-btn {
+  border-radius: var(--radius-sm) !important;
+  transition: all var(--transition-fast) !important;
+}
+
+.ant-btn-primary {
+  box-shadow: 0 2px 8px rgb(5 150 105 / 0.25) !important;
+}
+
+.ant-btn-primary:hover {
+  box-shadow: 0 4px 16px rgb(5 150 105 / 0.35) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tags
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-tag {
+  border-radius: var(--radius-sm) !important;
+  font-size: 12px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Alert
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-alert {
+  border-radius: var(--radius-md) !important;
+  border: none !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Progress
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-progress-bg {
+  border-radius: 100px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Spin
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ant-spin-nested-loading > div > .ant-spin .ant-spin-dot {
+  font-size: 32px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Diff Detail Table (HTML table used in DiffTable component)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.diff-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.diff-detail-table th {
+  background: var(--gray-50);
+  color: var(--gray-600);
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 2px solid var(--gray-200);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+
+.diff-detail-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--gray-100);
+  vertical-align: top;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-detail-table tr:hover td {
+  background: var(--jade-50);
+}
+
+.diff-detail-table .cell-diff {
+  background: #fef2f2;
+  color: var(--color-error);
+  font-weight: 500;
+}
+
+.diff-detail-table .cell-same {
+  color: var(--gray-500);
+}
+
+.diff-detail-table .cell-key {
+  font-weight: 600;
+  color: var(--gray-700);
+  background: #f8fafc;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Footer
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.app-footer {
+  text-align: center;
+  padding: 20px 24px;
+  background: #fff;
+  border-top: 1px solid var(--gray-100);
+  color: var(--gray-400);
+  font-size: 13px;
+  z-index: 1;
+  position: relative;
+}
+
+.app-footer a {
+  color: var(--jade-600);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color var(--transition-fast);
+}
+
+.app-footer a:hover {
+  color: var(--jade-700);
+  text-decoration: underline;
+}
+
+.app-footer .footer-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--gray-300);
+  margin: 0 8px;
+  vertical-align: middle;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AG Grid overrides (kept for future use)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 .ag-theme-alpine {
   --ag-font-size: 12px;
   --ag-header-font-size: 12px;
 }
 
-/* Scrollbar styling */
+/* ═══════════════════════════════════════════════════════════════════════════
+   Scrollbar
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 ::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
+  background: var(--gray-300);
   border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Keyframe Animations
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s var(--transition-base) both;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s var(--transition-slow) both;
+}
+
+.animate-slide-in {
+  animation: slideInRight 0.4s var(--transition-base) both;
+}
+
+/* Staggered animation delays for children */
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 80ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 160ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 240ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 320ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 400ms; }
+.stagger-children > *:nth-child(7) { animation-delay: 480ms; }
+.stagger-children > *:nth-child(8) { animation-delay: 560ms; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Responsive Adjustments
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0 16px !important;
+  }
+
+  .header-title {
+    font-size: 16px !important;
+  }
+
+  .header-subtitle {
+    display: none;
+  }
+
+  .app-content {
+    padding: 16px 12px !important;
+  }
+
+  .welcome-features {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .welcome-feature-card {
+    width: 100%;
+    max-width: 280px;
+  }
+
+  .welcome-hero h2 {
+    font-size: 22px;
+  }
+
+  .ant-steps {
+    padding: 12px 8px;
+  }
 }

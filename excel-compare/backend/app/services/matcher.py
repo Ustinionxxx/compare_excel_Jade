@@ -28,6 +28,15 @@ MATCH_TYPE_LABELS: dict[str, str] = {
     "only_b_c": "B+C（缺A）",
 }
 
+# Diff category labels for export display
+DIFF_CATEGORY_LABELS: dict[str, str] = {
+    "value_match": "三表一致",
+    "t1_diff": "A表独异",
+    "t2_diff": "B表独异",
+    "t3_diff": "C表独异",
+    "all_diff": "三方互异",
+}
+
 
 def _normalize_keys(df: pd.DataFrame, key_cols: list[str]) -> pd.DataFrame:
     """Normalize key columns to string, fill NaN, return with a composite key."""
@@ -87,8 +96,20 @@ class DiffEngine:
     def set_key_mapping(self, mappings: dict[str, list[str]]):
         self.key_mappings = mappings
 
-    def compute(self, compare_columns: list[str], mode: str = "all"):
-        """Execute the full diff computation."""
+    def compute(
+        self,
+        compare_columns: list[str],
+        mode: str = "all",
+        on_progress: "callable | None" = None,
+    ):
+        """Execute the full diff computation.
+
+        Args:
+            compare_columns: Columns to diff.
+            mode: "all" | "ab" | "ac" | "bc".
+            on_progress: Optional callback(stage, progress, message) for real-time
+                         progress reporting during long-running comparisons.
+        """
         self.compare_columns = compare_columns
         self.compare_mode = mode
 
@@ -116,17 +137,26 @@ class DiffEngine:
         labels = {fid: chr(65 + i) for i, fid in enumerate(file_ids)}  # A, B, C
         labels_in_use = {fid: labels[fid] for fid in compare_ids}
 
-        # Prepare normalized dataframes
+        # Phase 1: Prepare normalized dataframes
+        if on_progress:
+            on_progress("preparing", 20, "正在规范化数据...")
         prepared: dict[str, pd.DataFrame] = {}
         for fid in compare_ids:
             df = self.files[fid]["df"]
             keys = self.key_mappings[fid]
             prepared[fid] = _normalize_keys(df, keys)
 
-        # Merge with outer join to find match status
-        # Use indicator only on the last merge to avoid column name conflicts
-        merged = None
+        # Merge with outer join to find match status.
+        # Add boolean presence markers BEFORE merging — each marker is a single
+        # column, avoiding the expensive all-column iteration of _has_data().
+        for fid in compare_ids:
+            prepared[fid]["__present"] = True
+
+        # Phase 2: Execute outer join merges
+        if on_progress:
+            on_progress("merging", 35, "正在执行表外连接...")
         merge_keys = ["__composite_key"]
+        merged = None
         for i, fid in enumerate(compare_ids):
             pk = prepared[fid][merge_keys + prepared[fid].columns.difference(merge_keys).tolist()]
             suffix_label = labels_in_use[fid]
@@ -143,8 +173,13 @@ class DiffEngine:
                     how="outer",
                     indicator=is_last,  # only last merge gets indicator
                 )
+            if on_progress:
+                on_progress("merging", 35 + (i + 1) * (25 // len(compare_ids)),
+                           f"正在执行表外连接 ({i+1}/{len(compare_ids)})...")
 
-        # Build match type column based on indicator (2-way) or null analysis (3-way)
+        # Phase 3: Build match type column
+        if on_progress:
+            on_progress("matching", 60, "正在计算匹配类型...")
         if len(compare_ids) == 2:
             merged["__match_type"] = merged["_merge"].map({
                 "both": "matched",
@@ -162,16 +197,21 @@ class DiffEngine:
         self.matched = int((merged["__match_type"] == "matched").sum())
         self.total_keys = len(merged)
 
-        # ── Step 1: fill NaN in all data columns (safe, handles all dtypes) ──
+        # Phase 4: Fill NaN in all data columns
+        if on_progress:
+            on_progress("filling", 75, "正在填充缺失值...")
         data_cols = [c for c in merged.columns if not c.startswith("__")]
-        for col in data_cols:
-            col_dtype = merged[col].dtype
-            if isinstance(col_dtype, pd.CategoricalDtype):
-                merged[col] = merged[col].cat.add_categories("").fillna("")
-            else:
-                merged[col] = merged[col].fillna("")
+        # Handle categorical columns first (rare), then fill remaining in one shot
+        cat_cols = [c for c in data_cols if isinstance(merged[c].dtype, pd.CategoricalDtype)]
+        for col in cat_cols:
+            merged[col] = merged[col].cat.add_categories("").fillna("")
+        non_cat_cols = [c for c in data_cols if c not in cat_cols]
+        if non_cat_cols:
+            merged[non_cat_cols] = merged[non_cat_cols].fillna("")
 
-        # ── Step 2: compute column diffs (cast to str for safe comparison) ──
+        # Phase 5: Compute column diffs — 5-category classification
+        if on_progress:
+            on_progress("diffing", 85, "正在计算列差异（五类分类）...")
         diff_cols = []
         for col in compare_columns:
             col_values: list[str] = []
@@ -181,13 +221,39 @@ class DiffEngine:
             if all(c in merged.columns for c in col_values):
                 diff_col = f"__diff_{col}"
                 vals = [merged[c].astype(str) for c in col_values]
+
+                # Default: all values equal
+                diff_cat = pd.Series("value_match", index=merged.index)
+
                 if len(vals) == 2:
-                    merged[diff_col] = vals[0] != vals[1]
+                    # 2-way: only value_match or t1_diff
+                    diff_cat[vals[0] != vals[1]] = "t1_diff"
                 else:
-                    merged[diff_col] = (vals[0] != vals[1]) | (vals[1] != vals[2]) | (vals[0] != vals[2])
+                    # 3-way: full 5-category classification
+                    v0, v1, v2 = vals
+                    eq01 = v0 == v1
+                    eq02 = v0 == v2
+                    eq12 = v1 == v2
+
+                    # Order matters: more-specific masks override earlier ones
+                    # T2=T3 but T1≠T2 → T1 is the outlier
+                    diff_cat[eq12 & ~eq01] = "t1_diff"
+                    # T1=T3 but T1≠T2 → T2 is the outlier
+                    diff_cat[eq02 & ~eq01] = "t2_diff"
+                    # T1=T2 but T1≠T3 → T3 is the outlier
+                    diff_cat[eq01 & ~eq02] = "t3_diff"
+                    # All three differ from each other
+                    diff_cat[~eq01 & ~eq02 & ~eq12] = "all_diff"
+
+                # Non-matched rows → empty string (no meaningful comparison)
+                matched_mask = merged["__match_type"] == "matched"
+                diff_cat[~matched_mask] = ""
+                merged[diff_col] = diff_cat
                 diff_cols.append(diff_col)
 
-        # ── Step 3: extract key column values (from already-filled data) ──
+        # Phase 6: Extract key column values (from already-filled data)
+        if on_progress:
+            on_progress("extracting", 92, "正在提取主键值...")
         key_cols = self.key_mappings[compare_ids[0]]
         first_label = labels_in_use[compare_ids[0]]
         for col in key_cols:
@@ -197,14 +263,22 @@ class DiffEngine:
             else:
                 merged[f"__key_{col}"] = ""
 
-        # ── Step 4: compute column stats (vectorized, no per-row loop) ──
+        # Phase 7: Compute column stats — 5-category breakdown (matched rows only)
+        if on_progress:
+            on_progress("stats", 96, "正在生成统计摘要...")
         matched_mask = merged["__match_type"] == "matched"
         self.column_stats = []
         for col, diff_col in zip(compare_columns, diff_cols):
             if diff_col in merged.columns:
-                same = int((matched_mask & ~merged[diff_col].fillna(False)).sum())
-                diff = int((matched_mask & merged[diff_col].fillna(False)).sum())
-                self.column_stats.append({"column": col, "same": same, "diff": diff})
+                cat_series = merged.loc[matched_mask, diff_col]
+                self.column_stats.append({
+                    "column": col,
+                    "value_match": int((cat_series == "value_match").sum()),
+                    "t1_diff": int((cat_series == "t1_diff").sum()),
+                    "t2_diff": int((cat_series == "t2_diff").sum()),
+                    "t3_diff": int((cat_series == "t3_diff").sum()),
+                    "all_diff": int((cat_series == "all_diff").sum()),
+                })
 
         self.result_df = merged
         return self._make_summary()
@@ -217,38 +291,35 @@ class DiffEngine:
           'only_a' / 'only_b' / 'only_c'  — present in exactly ONE table
           'only_a_b' / 'only_a_c' / 'only_b_c' — present in exactly TWO tables
 
-        Uses vectorized column operations instead of df.apply(axis=1),
-        which is ~50-100x faster for large DataFrames.
+        Uses boolean presence marker columns (__present__A, __present__B, …)
+        added before the outer join.  After an outer join, only rows that
+        actually came from a table have __present__X == True; rows that
+        were solely contributed by other tables have __present__X == NaN.
+
+        This avoids iterating over every data column (50-150+ columns per
+        table) to detect presence, which was the #1 bottleneck for large
+        multi-table comparisons (16 MB × 3).
         """
         a_label = labels[compare_ids[0]].lower()
         b_label = labels[compare_ids[1]].lower()
         c_label = labels[compare_ids[2]].lower()
 
-        def _has_data(label: str) -> "pd.Series":
-            """Return boolean Series: True where at least one non-empty value exists."""
-            cols = [
-                c for c in df.columns
-                if c.endswith(f"__{label.upper()}") and not c.startswith("__")
-            ]
-            if not cols:
-                return pd.Series(False, index=df.index)
-            # Vectorized: a row is "present" if any of its columns is non-empty
-            mask = pd.Series(False, index=df.index)
-            for col in cols:
-                # Treat empty string, NaN, "nan", "None" as missing
-                col_vals = df[col].fillna("").astype(str)
-                mask |= (col_vals != "") & (col_vals != "nan") & (col_vals != "None")
-            return mask
-
-        present_a = _has_data(a_label)
-        present_b = _has_data(b_label)
-        present_c = _has_data(c_label)
+        # Presence markers: True where the row came from that table.
+        # After an outer join, the __present__ column is True for rows
+        # that actually came from that table and NaN for rows that were
+        # contributed by other tables only.  Use .eq(True) to avoid
+        # fillna-downcast FutureWarnings (pandas 2.x → 3.x migration).
+        a_col = f"__present__{labels[compare_ids[0]]}"
+        b_col = f"__present__{labels[compare_ids[1]]}"
+        c_col = f"__present__{labels[compare_ids[2]]}"
+        present_a = df[a_col].eq(True) if a_col in df.columns else pd.Series(False, index=df.index)
+        present_b = df[b_col].eq(True) if b_col in df.columns else pd.Series(False, index=df.index)
+        present_c = df[c_col].eq(True) if c_col in df.columns else pd.Series(False, index=df.index)
 
         # Count presence (vectorized integer sum)
         presence_count = present_a.astype(int) + present_b.astype(int) + present_c.astype(int)
 
-        # Build match_type using vectorized numpy.select
-        # Start with default "unknown"
+        # Build match_type using vectorized boolean indexing.
         match_type = pd.Series("unknown", index=df.index)
 
         # 3 tables present → matched
@@ -265,6 +336,15 @@ class DiffEngine:
         match_type[(presence_count == 1) & present_c] = f"only_{c_label}"
 
         df["__match_type"] = match_type
+
+        # Drop presence marker columns now that match types are computed
+        present_cols = [
+            c for c in df.columns
+            if c.startswith("__present__")
+        ]
+        if present_cols:
+            df.drop(columns=present_cols, inplace=True)
+
         self.only_a = int((match_type == f"only_{a_label}").sum())
         self.only_b = int((match_type == f"only_{b_label}").sum())
         self.only_c = int((match_type == f"only_{c_label}").sum())
@@ -340,26 +420,35 @@ class DiffEngine:
         mask = pd.Series(True, index=self.result_df.index)
 
         if match_filter != "all":
-            is_3way = self.compare_mode == "all" and len(self.files) >= 3
-            if is_3way and match_filter in ("only_a", "only_b", "only_c"):
-                mask &= self.result_df["__match_type"].str.startswith(match_filter)
-            else:
-                mask &= self.result_df["__match_type"] == match_filter
+            mask &= self.result_df["__match_type"] == match_filter
 
         if diff_filter != "all" or diff_column:
             diff_cols_list = [c for c in self.result_df.columns if c.startswith("__diff_")]
             if diff_column:
                 target = f"__diff_{diff_column}"
                 if target in self.result_df.columns:
+                    vals = self.result_df[target].fillna("")
                     if diff_filter == "same":
-                        mask &= ~self.result_df[target].fillna(False)
+                        mask &= vals == "value_match"
                     elif diff_filter == "different":
-                        mask &= self.result_df[target].fillna(False)
+                        mask &= (vals != "") & (vals != "value_match")
+                    elif diff_filter in ("value_match", "t1_diff", "t2_diff", "t3_diff", "all_diff"):
+                        mask &= vals == diff_filter
             else:
                 if diff_filter == "same":
-                    mask &= ~self.result_df[diff_cols_list].fillna(False).any(axis=1)
+                    for dc in diff_cols_list:
+                        mask &= self.result_df[dc].fillna("") == "value_match"
                 elif diff_filter == "different":
-                    mask &= self.result_df[diff_cols_list].fillna(False).any(axis=1)
+                    any_diff_mask = pd.Series(False, index=self.result_df.index)
+                    for dc in diff_cols_list:
+                        vals = self.result_df[dc].fillna("")
+                        any_diff_mask |= (vals != "") & (vals != "value_match")
+                    mask &= any_diff_mask
+                elif diff_filter in ("value_match", "t1_diff", "t2_diff", "t3_diff", "all_diff"):
+                    cat_mask = pd.Series(False, index=self.result_df.index)
+                    for dc in diff_cols_list:
+                        cat_mask |= self.result_df[dc].fillna("") == diff_filter
+                    mask &= cat_mask
 
         df = self.result_df.loc[mask]
         total = len(df)
@@ -408,12 +497,13 @@ class DiffEngine:
                         val = rec.get(src_col, "")
                         data[f"{label}_{col}"] = str(val) if val is not None else ""
 
-                # Diff flags
+                # Diff flags — store category string, not boolean
                 for dc in diff_col_names:
                     col_name = dc.replace("__diff_", "")
-                    is_diff = bool(rec.get(dc, False))
-                    data[dc] = is_diff
-                    if is_diff:
+                    diff_cat = str(rec.get(dc, ""))
+                    data[dc] = diff_cat
+                    # Include in diff_columns if any kind of difference
+                    if diff_cat not in ("", "value_match"):
                         diff_columns.append(col_name)
 
                 rows_list.append({
@@ -473,26 +563,35 @@ class DiffEngine:
         mask = pd.Series(True, index=df.index)
 
         if match_filter != "all":
-            is_3way = self.compare_mode == "all" and len(self.files) >= 3
-            if is_3way and match_filter in ("only_a", "only_b", "only_c"):
-                mask &= df["__match_type"].str.startswith(match_filter)
-            else:
-                mask &= df["__match_type"] == match_filter
+            mask &= df["__match_type"] == match_filter
 
         if diff_filter != "all" or diff_column:
             diff_cols_list = [c for c in df.columns if c.startswith("__diff_")]
             if diff_column:
                 target = f"__diff_{diff_column}"
                 if target in df.columns:
+                    vals = df[target].fillna("")
                     if diff_filter == "same":
-                        mask &= ~df[target].fillna(False)
+                        mask &= vals == "value_match"
                     elif diff_filter == "different":
-                        mask &= df[target].fillna(False)
+                        mask &= (vals != "") & (vals != "value_match")
+                    elif diff_filter in ("value_match", "t1_diff", "t2_diff", "t3_diff", "all_diff"):
+                        mask &= vals == diff_filter
             else:
                 if diff_filter == "same":
-                    mask &= ~df[diff_cols_list].fillna(False).any(axis=1)
+                    for dc in diff_cols_list:
+                        mask &= df[dc].fillna("") == "value_match"
                 elif diff_filter == "different":
-                    mask &= df[diff_cols_list].fillna(False).any(axis=1)
+                    any_diff_mask = pd.Series(False, index=df.index)
+                    for dc in diff_cols_list:
+                        vals = df[dc].fillna("")
+                        any_diff_mask |= (vals != "") & (vals != "value_match")
+                    mask &= any_diff_mask
+                elif diff_filter in ("value_match", "t1_diff", "t2_diff", "t3_diff", "all_diff"):
+                    cat_mask = pd.Series(False, index=df.index)
+                    for dc in diff_cols_list:
+                        cat_mask |= df[dc].fillna("") == diff_filter
+                    mask &= cat_mask
 
         df = df.loc[mask]
 
@@ -557,8 +656,8 @@ class DiffEngine:
                 diff_col = f"__diff_{col}"
                 if diff_col in df.columns:
                     result[f"差异_{col}"] = df[diff_col].map(
-                        {True: "不同", False: "相同"}
-                    ).fillna("相同")
+                        DIFF_CATEGORY_LABELS
+                    ).fillna("")
 
         return pd.DataFrame(result)
 
@@ -569,9 +668,10 @@ class DiffEngine:
     ) -> pd.DataFrame:
         """Build long-format diff detail — one row per differing column.
 
-        Columns: 主键：{key1}, 主键：{key2}, ..., 差异的字段名, {alias_A}, {alias_B}
+        Columns for 2-file: 主键：{key1}, ..., 差异的字段名, {alias_A}, {alias_B}
+        Columns for 3-file: 主键：{key1}, ..., 差异的字段名, {alias_A}, {alias_B}, {alias_C}
 
-        Column names for A/B values use file aliases (user-set or filename stem).
+        Column names for table values use file aliases (user-set or filename stem).
         Each matched record with N differing columns produces N rows.
 
         Fully vectorized — no iterrows(), ~10-50x faster on large DataFrames.
@@ -580,7 +680,7 @@ class DiffEngine:
         labels = {fid: chr(65 + i) for i, fid in enumerate(file_ids)}
         key_cols = self.key_mappings.get(file_ids[0], [])
 
-        # Resolve aliases for A/B value column names
+        # Resolve aliases for table value column names
         aliases = file_aliases or {}
 
         def _alias(fid: str, fallback_label: str) -> str:
@@ -591,11 +691,13 @@ class DiffEngine:
                 return finfo.get("file_alias", fallback_label)
             return f"{fallback_label}表"
 
-        col_name_a = _alias(file_ids[0], labels[file_ids[0]])
-        col_name_b = (
-            _alias(file_ids[1], labels[file_ids[1]])
-            if len(file_ids) > 1 else "B表值"
-        )
+        # Resolve column names for each table
+        table_col_names: list[str] = []
+        table_src_templates: list[str | None] = []
+        for i, fid in enumerate(file_ids):
+            label = labels[fid]
+            table_col_names.append(_alias(fid, label))
+            table_src_templates.append(f"{{}}__{label}")
 
         # Build diff column mapping: __diff_{col} → col name
         diff_col_map = {f"__diff_{c}": c for c in self.compare_columns}
@@ -603,18 +705,15 @@ class DiffEngine:
         if not diff_col_names:
             return pd.DataFrame()
 
-        # Only keep rows that have at least one diff=True
-        has_any_diff = df[diff_col_names].fillna(False).any(axis=1)
+        # Only keep rows that have at least one diff (non-empty, non-value_match)
+        has_any_diff = pd.Series(False, index=df.index)
+        for dc in diff_col_names:
+            if dc in df.columns:
+                vals = df[dc].fillna("")
+                has_any_diff |= (vals != "") & (vals != "value_match")
         diff_df = df.loc[has_any_diff]
         if len(diff_df) == 0:
             return pd.DataFrame()
-
-        # A/B source columns
-        a_src_col = f"{{}}__{labels[file_ids[0]]}"
-        b_src_col = (
-            f"{{}}__{labels[file_ids[1]]}"
-            if len(file_ids) > 1 else None
-        )
 
         frames: list[pd.DataFrame] = []
         for diff_col, cmp_col in diff_col_map.items():
@@ -622,7 +721,8 @@ class DiffEngine:
                 continue
 
             # Select rows where this specific column differs
-            col_mask = diff_df[diff_col].fillna(False).astype(bool)
+            col_series = diff_df[diff_col].fillna("")
+            col_mask = (col_series != "") & (col_series != "value_match")
             subset = diff_df.loc[col_mask]
             if len(subset) == 0:
                 continue
@@ -639,18 +739,12 @@ class DiffEngine:
             # Column name
             result_cols["差异的字段名"] = pd.Series(cmp_col, index=subset.index)
 
-            # A value
-            a_src = a_src_col.format(cmp_col)
-            a_val = subset.get(a_src, pd.Series("", index=subset.index))
-            result_cols[col_name_a] = a_val.fillna("").astype(str)
-
-            # B value
-            if b_src_col:
-                b_src = b_src_col.format(cmp_col)
-                b_val = subset.get(b_src, pd.Series("", index=subset.index))
-                result_cols[col_name_b] = b_val.fillna("").astype(str)
-            else:
-                result_cols[col_name_b] = pd.Series("", index=subset.index)
+            # Table values (A, B, ... for 2-way; A, B, C for 3-way)
+            for table_idx, src_tpl in enumerate(table_src_templates):
+                col_name = table_col_names[table_idx]
+                src = src_tpl.format(cmp_col)
+                val = subset.get(src, pd.Series("", index=subset.index))
+                result_cols[col_name] = val.fillna("").astype(str)
 
             frames.append(pd.DataFrame(result_cols))
 
@@ -658,7 +752,7 @@ class DiffEngine:
             return pd.DataFrame()
 
         result = pd.concat(frames, ignore_index=True)
-        columns = [f"主键：{c}" for c in key_cols] + ["差异的字段名", col_name_a, col_name_b]
+        columns = [f"主键：{c}" for c in key_cols] + ["差异的字段名"] + table_col_names
         return result[columns]
 
 

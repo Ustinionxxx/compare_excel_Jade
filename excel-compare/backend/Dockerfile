@@ -18,4 +18,4 @@ EXPOSE 8000
 # 会话和比对任务进度通过文件系统共享（uploads/sessions/,
 # uploads/compare_tasks/），多 worker 可正常协作。
 # 高并发生产环境建议接入 Redis 替代文件系统共享存储。
-CMD ["sh", "-c", "gunicorn -w ${WORKERS:-2} -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --max-requests 1000 --max-requests-jitter 100 --timeout 300 --graceful-timeout 30 app.main:app"]
+CMD ["sh", "-c", "mkdir -p uploads/sessions uploads/compare_tasks && gunicorn -w ${WORKERS:-2} -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --max-requests 1000 --max-requests-jitter 100 --timeout 600 --graceful-timeout 30 app.main:app"]

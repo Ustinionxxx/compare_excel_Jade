@@ -14,7 +14,7 @@ import type {
 
 const http = axios.create({
   baseURL: '/api',
-  timeout: 300_000, // 5 min default (for large comparisons)
+  timeout: 600_000, // 10 min default (for large 3-way comparisons)
 });
 
 // ── Session ──

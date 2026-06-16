@@ -17,6 +17,17 @@ interface Props {
   matchTypeLabels: Record<string, string>;
 }
 
+/** Diff category display labels for export filenames / filter display */
+const DIFF_LABEL_MAP: Record<string, string> = {
+  different: '值不同',
+  same: '值相同',
+  value_match: '三表一致',
+  t1_diff: 'A表独异',
+  t2_diff: 'B表独异',
+  t3_diff: 'C表独异',
+  all_diff: '三方互异',
+};
+
 /** Build a human-readable label for the current filter combination */
 function filterLabel(
   matchFilter: string,
@@ -29,7 +40,7 @@ function filterLabel(
     parts.push(matchTypeLabels[matchFilter] || matchFilter);
   }
   if (diffFilter !== 'all') {
-    parts.push(diffFilter === 'different' ? '值不同' : '值相同');
+    parts.push(DIFF_LABEL_MAP[diffFilter] || diffFilter);
   }
   if (diffColumn) {
     parts.push(`列:${diffColumn}`);
@@ -78,17 +89,19 @@ export default function ExportBar({ sessionId, files, matchFilter, diffFilter, d
       parts.push(matchTypeLabels[matchFilter] || matchFilter);
     }
     if (diffFilter !== 'all') {
-      parts.push(diffFilter === 'different' ? '值不同' : '值相同');
+      parts.push(DIFF_LABEL_MAP[diffFilter] || diffFilter);
     }
     if (diffColumn) parts.push(diffColumn);
     return `${parts.join('_')}_${Date.now()}.xlsx`;
   };
 
-  // 需求 5: 差异列导出开关 — 仅非 only_a/b/c 时显示
-  const showDiffToggle = !['only_a', 'only_b', 'only_c'].includes(matchFilter);
+  // 差异列导出开关 — 仅非 only_a/b/c 及 2-of-3 类型时显示
+  const SINGLE_TABLE_FILTERS = ['only_a', 'only_b', 'only_c', 'only_a_b', 'only_a_c', 'only_b_c'];
+  const showDiffToggle = !SINGLE_TABLE_FILTERS.includes(matchFilter);
 
-  // 是否显示"差异明细格式"选项 — 仅当"匹配成功+值不同"时
-  const showDiffDetail = matchFilter === 'matched' && diffFilter === 'different';
+  // "差异明细格式" — matched + any specific diff category
+  const isDiffCategory = diffFilter !== 'all' && diffFilter !== 'same' && diffFilter !== 'value_match';
+  const showDiffDetail = matchFilter === 'matched' && isDiffCategory;
 
   // Build menu items imperatively to avoid JSX spread issues
   const items: MenuProps['items'] = [];

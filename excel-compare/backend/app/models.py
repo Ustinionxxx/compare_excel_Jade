@@ -64,7 +64,7 @@ class CompareResponse(BaseModel):
     only_a: int = 0
     only_b: int = 0
     only_c: int | None = 0
-    column_stats: list[dict[str, Any]]  # [{column, same, diff}]
+    column_stats: list[dict[str, Any]]  # [{column, value_match, t1_diff, t2_diff, t3_diff, all_diff}]
     match_type_labels: dict[str, str] = {}  # "only_a" → "仅 采购单 存在" etc.
 
 
@@ -76,12 +76,20 @@ class MatchFilter(str, Enum):
     only_a = "only_a"
     only_b = "only_b"
     only_c = "only_c"
+    only_a_b = "only_a_b"  # 仅缺C（A+B有）
+    only_a_c = "only_a_c"  # 仅缺B（A+C有）
+    only_b_c = "only_b_c"  # 仅缺A（B+C有）
 
 
 class DiffFilter(str, Enum):
     all = "all"
-    same = "same"
-    different = "different"
+    same = "same"              # 聚合：等同于 value_match
+    different = "different"    # 聚合：任意非 value_match 类别
+    value_match = "value_match"  # 三表一致
+    t1_diff = "t1_diff"          # T1独异（T1≠T2=T3）
+    t2_diff = "t2_diff"          # T2独异（T2≠T1=T3）
+    t3_diff = "t3_diff"          # T3独异（T3≠T1=T2）
+    all_diff = "all_diff"        # 三方互不相同
 
 
 class DetailQueryRequest(BaseModel):

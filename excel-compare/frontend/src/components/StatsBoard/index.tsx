@@ -22,13 +22,19 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
   const [showOnlyDiffs, setShowOnlyDiffs] = useState(false);
 
   const hasC = result.only_c !== null && result.only_c !== undefined;
+  // 3-way comparison: matchTypeLabels includes 2-of-3 types like "only_a_b"
+  const is3Way = 'only_a_b' in (result.match_type_labels || {});
 
   /** Resolve a friendly label for a match_type key, falling back to 仅A/仅B/仅C */
   const label = (key: string, fallback: string) => matchTypeLabels[key] || fallback;
 
+  /** Check if any of the 4 diff categories is non-zero */
+  const hasAnyDiff = (s: ColumnStat) =>
+    s.t1_diff > 0 || s.t2_diff > 0 || s.t3_diff > 0 || s.all_diff > 0;
+
   // Count columns with actual differences
   const diffColumnCount = useMemo(
-    () => result.column_stats.filter(s => s.diff > 0).length,
+    () => result.column_stats.filter(hasAnyDiff).length,
     [result.column_stats],
   );
 
@@ -76,36 +82,96 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
     });
   }
 
-  const colStatsColumns = [
-    { title: '对比列', dataIndex: 'column', key: 'column' },
+  // Build diff category columns; 3-way-only columns (T2/T3) hidden for 2-way
+  const diffCategoryCols: any[] = [
     {
-      title: '值相同', dataIndex: 'same', key: 'same',
-      render: (v: number) => (
-        <Tag icon={<CheckCircleOutlined />} color="success">{v.toLocaleString()}</Tag>
-      ),
-      sorter: (a: ColumnStat, b: ColumnStat) => a.same - b.same,
-    },
-    {
-      title: '值不同', dataIndex: 'diff', key: 'diff',
+      title: '三表一致', dataIndex: 'value_match', key: 'value_match',
       render: (v: number, record: ColumnStat) => (
         <Tag
-          icon={<CloseCircleOutlined />}
-          color="error"
+          icon={<CheckCircleOutlined />}
+          color="success"
           style={{ cursor: 'pointer' }}
-          onClick={() => onDrill({ diff_filter: 'different', diff_column: record.column })}
+          onClick={() => onDrill({ diff_filter: 'value_match', diff_column: record.column })}
         >
           {v.toLocaleString()}
         </Tag>
       ),
-      sorter: (a: ColumnStat, b: ColumnStat) => a.diff - b.diff,
+      sorter: (a: ColumnStat, b: ColumnStat) => a.value_match - b.value_match,
     },
+    {
+      title: 'A表独异', dataIndex: 't1_diff', key: 't1_diff',
+      render: (v: number, record: ColumnStat) => (
+        <Tag
+          icon={<CloseCircleOutlined />}
+          color="warning"
+          style={{ cursor: 'pointer' }}
+          onClick={() => onDrill({ diff_filter: 't1_diff', diff_column: record.column })}
+        >
+          {v.toLocaleString()}
+        </Tag>
+      ),
+      sorter: (a: ColumnStat, b: ColumnStat) => a.t1_diff - b.t1_diff,
+    },
+  ];
+  // 3-way only: show T2/T3/all_diff columns
+  if (is3Way) {
+    diffCategoryCols.push(
+      {
+        title: 'B表独异', dataIndex: 't2_diff', key: 't2_diff',
+        render: (v: number, record: ColumnStat) => (
+          <Tag
+            icon={<CloseCircleOutlined />}
+            color="processing"
+            style={{ cursor: 'pointer' }}
+            onClick={() => onDrill({ diff_filter: 't2_diff', diff_column: record.column })}
+          >
+            {v.toLocaleString()}
+          </Tag>
+        ),
+        sorter: (a: ColumnStat, b: ColumnStat) => a.t2_diff - b.t2_diff,
+      },
+      {
+        title: 'C表独异', dataIndex: 't3_diff', key: 't3_diff',
+        render: (v: number, record: ColumnStat) => (
+          <Tag
+            icon={<CloseCircleOutlined />}
+            color="cyan"
+            style={{ cursor: 'pointer' }}
+            onClick={() => onDrill({ diff_filter: 't3_diff', diff_column: record.column })}
+          >
+            {v.toLocaleString()}
+          </Tag>
+        ),
+        sorter: (a: ColumnStat, b: ColumnStat) => a.t3_diff - b.t3_diff,
+      },
+      {
+        title: '三方互异', dataIndex: 'all_diff', key: 'all_diff',
+        render: (v: number, record: ColumnStat) => (
+          <Tag
+            icon={<CloseCircleOutlined />}
+            color="error"
+            style={{ cursor: 'pointer' }}
+            onClick={() => onDrill({ diff_filter: 'all_diff', diff_column: record.column })}
+          >
+            {v.toLocaleString()}
+          </Tag>
+        ),
+        sorter: (a: ColumnStat, b: ColumnStat) => a.all_diff - b.all_diff,
+      },
+    );
+  }
+
+  const colStatsColumns: any[] = [
+    { title: '对比列', dataIndex: 'column', key: 'column', fixed: 'left' as const },
+    ...diffCategoryCols,
     {
       title: '差异率', key: 'rate',
       render: (_: unknown, record: ColumnStat) => {
-        const total = record.same + record.diff;
+        const diffTotal = record.t1_diff + record.t2_diff + record.t3_diff + record.all_diff;
+        const total = record.value_match + diffTotal;
         if (total === 0) return '-';
-        const rate = ((record.diff / total) * 100).toFixed(1);
-        return <span style={{ color: record.diff > record.same ? '#ff4d4f' : '#52c41a' }}>{rate}%</span>;
+        const rate = ((diffTotal / total) * 100).toFixed(1);
+        return <span style={{ color: diffTotal > record.value_match ? '#ff4d4f' : '#52c41a' }}>{rate}%</span>;
       },
     },
     {
@@ -140,10 +206,14 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
     },
   ];
 
+  // Check if all 4 diff categories are zero
+  const allDiffsZero = (s: ColumnStat) =>
+    s.t1_diff === 0 && s.t2_diff === 0 && s.t3_diff === 0 && s.all_diff === 0;
+
   // Filter data source
   const rawStats = [...result.column_stats];
   const filteredStats = showOnlyDiffs
-    ? rawStats.filter(s => s.diff > 0)
+    ? rawStats.filter(s => !allDiffsZero(s))
     : rawStats;
 
   // Sorted: dismissed at bottom
@@ -153,9 +223,9 @@ export default function StatsBoard({ result, dismissedColumns, onDismissColumn, 
     return aDismissed - bDismissed;
   });
 
-  // Check if there are any columns eligible for batch dismiss (diff=0 and not already dismissed)
+  // Check if there are any columns eligible for batch dismiss (no diffs at all)
   const dismissibleAll = result.column_stats.filter(
-    s => s.diff === 0 && !dismissedColumns.includes(s.column)
+    s => allDiffsZero(s) && !dismissedColumns.includes(s.column)
   );
   const hasDismissed = dismissedColumns.length > 0;
 

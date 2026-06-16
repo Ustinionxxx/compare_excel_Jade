@@ -27,13 +27,19 @@ interface Props {
   matchTypeLabels: Record<string, string>;
 }
 
-const DIFF_FILTERS = [
+const BASE_DIFF_FILTERS = [
   { label: '全部', value: 'all' },
-  { label: '值相同', value: 'same' },
-  { label: '值不同', value: 'different' },
+  { label: '三表一致', value: 'value_match' },
+  { label: '值不同（任意）', value: 'different' },
+  { label: 'A表独异', value: 't1_diff' },
+];
+const DIFF_FILTERS_3WAY = [
+  { label: 'B表独异', value: 't2_diff' },
+  { label: 'C表独异', value: 't3_diff' },
+  { label: '三方互异', value: 'all_diff' },
 ];
 
-/** Build match filter options from dynamic labels (fallback to 仅A/仅B/仅C) */
+/** Build match filter options from dynamic labels (includes 2-of-3 types) */
 function buildMatchFilters(labels: Record<string, string>) {
   const filters = [
     { label: '全部', value: 'all' },
@@ -42,6 +48,9 @@ function buildMatchFilters(labels: Record<string, string>) {
   if (labels.only_a) filters.push({ label: labels.only_a, value: 'only_a' });
   if (labels.only_b) filters.push({ label: labels.only_b, value: 'only_b' });
   if (labels.only_c) filters.push({ label: labels.only_c, value: 'only_c' });
+  if (labels.only_a_b) filters.push({ label: labels.only_a_b, value: 'only_a_b' });
+  if (labels.only_a_c) filters.push({ label: labels.only_a_c, value: 'only_a_c' });
+  if (labels.only_b_c) filters.push({ label: labels.only_b_c, value: 'only_b_c' });
   return filters;
 }
 
@@ -60,9 +69,17 @@ export default function DiffTable({
   // Filter out dismissed columns
   const activeCompareColumns = compareColumns.filter(c => !dismissedColumns.includes(c));
 
-  // Focused view: when filtering "matched" + "different",
-  // only show match type + key columns + compare column A/B values
-  const isFocused = matchFilter === 'matched' && diffFilter === 'different';
+  // 3-way detection
+  const is3Way = 'only_a_b' in (compareResult.match_type_labels || {});
+
+  // Diff filter options: base + 3-way only
+  const diffFilterOptions = is3Way
+    ? [...BASE_DIFF_FILTERS, ...DIFF_FILTERS_3WAY]
+    : BASE_DIFF_FILTERS;
+
+  // Focused view: when filtering matched + any specific diff category
+  const isDiffCategory = diffFilter !== 'all' && diffFilter !== 'value_match' && diffFilter !== 'same';
+  const isFocused = matchFilter === 'matched' && isDiffCategory;
   const focusedCols = diffColumn
     ? (dismissedColumns.includes(diffColumn) ? [] : [diffColumn])
     : activeCompareColumns;
@@ -113,16 +130,23 @@ export default function DiffTable({
     setPage(1);
   }, [matchFilter, diffFilter, diffColumn]);
 
-  // Determine which table prefix to filter for (only_a → "A", only_b → "B", etc.)
-  const activeTablePrefix = matchFilter === 'only_a' ? 'A'
-    : matchFilter === 'only_b' ? 'B'
-    : matchFilter === 'only_c' ? 'C'
-    : null;
+  // Determine which table prefixes to filter for (supports 2-of-3 match types)
+  const activeTablePrefixes: string[] | null = (() => {
+    switch (matchFilter) {
+      case 'only_a': return ['A'];
+      case 'only_b': return ['B'];
+      case 'only_c': return ['C'];
+      case 'only_a_b': return ['A', 'B'];
+      case 'only_a_c': return ['A', 'C'];
+      case 'only_b_c': return ['B', 'C'];
+      default: return null;
+    }
+  })();
 
-  // Filter data keys to only the active table's columns (only_a/b/c) or all
+  // Filter data keys to only the active table's columns or all
   const filterDataKeys = (keys: string[]) => {
-    if (!activeTablePrefix) return keys;
-    return keys.filter(k => k.startsWith(activeTablePrefix));
+    if (!activeTablePrefixes) return keys;
+    return keys.filter(k => activeTablePrefixes.some(p => k.startsWith(p)));
   };
 
   /** Map a data key like "A_Name" to use alias prefix like "采购单_Name" */
@@ -210,10 +234,10 @@ export default function DiffTable({
             size="small"
             value={diffFilter}
             onChange={v => onFilterChange({ diff_filter: v })}
-            options={DIFF_FILTERS}
-            style={{ width: 110 }}
+            options={diffFilterOptions}
+            style={{ width: 130 }}
           />
-          {diffFilter === 'different' && (
+          {isDiffCategory && (
             <Select
               size="small"
               value={diffColumn || undefined}

@@ -27,8 +27,11 @@ export interface ColumnMapping {
 
 export interface ColumnStat {
   column: string;
-  same: number;
-  diff: number;
+  value_match: number;
+  t1_diff: number;
+  t2_diff: number;
+  t3_diff: number;
+  all_diff: number;
 }
 
 export interface CompareResponse {
@@ -43,8 +46,10 @@ export interface CompareResponse {
   match_type_labels: Record<string, string>;
 }
 
-export type MatchType = 'matched' | 'only_a' | 'only_b' | 'only_c';
-export type DiffType = 'same' | 'different';
+export type MatchType = 'matched' | 'only_a' | 'only_b' | 'only_c'
+  | 'only_a_b' | 'only_a_c' | 'only_b_c';
+export type DiffFilterValue = 'all' | 'same' | 'different'
+  | 'value_match' | 't1_diff' | 't2_diff' | 't3_diff' | 'all_diff';
 
 export interface DetailRow {
   row_id: string;

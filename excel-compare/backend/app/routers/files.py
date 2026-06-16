@@ -233,7 +233,7 @@ def get_parse_status(session_id: str, file_id: str):
                     "message": "解析完成",
                     "file_name": info["file_name"],
                     "columns": info["columns"],
-                    "total_rows": len(info.get("df") or []),
+                    "total_rows": len(df) if (df := info.get("df")) is not None else 0,
                 }
             else:
                 # Still parsing on another worker — return a synthetic

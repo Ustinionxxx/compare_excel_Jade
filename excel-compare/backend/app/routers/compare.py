@@ -224,11 +224,16 @@ def _run_compare_background(
             )
             return
 
-        _set_compare_progress(task_id, stage="merging", progress=30, message="正在合并数据表...")
+        _set_compare_progress(task_id, stage="merging", progress=15, message="正在准备比对数据...")
 
         try:
             _logger.info("Compare thread: calling engine.compute session=%s", session_id)
-            summary = engine.compute(compare_columns, mode)
+
+            # Pass progress callback so the frontend sees granular updates
+            def _on_progress(stage: str, progress: int, message: str):
+                _set_compare_progress(task_id, stage=stage, progress=progress, message=message)
+
+            summary = engine.compute(compare_columns, mode, on_progress=_on_progress)
             _logger.info("Compare thread: compute done session=%s keys=%d", session_id, summary.get("total_keys", 0))
         except ValueError as e:
             _logger.error("Compare thread: ValueError session=%s error=%s", session_id, e)
@@ -276,9 +281,25 @@ def set_column_mapping(req: SetColumnMappingRequest):
     if not engine:
         raise HTTPException(404, "Session not found")
 
+    # Validate all file_ids exist in session
+    missing = [m.file_id for m in req.mappings if m.file_id not in engine.files]
+    if missing:
+        # Stale cache possible on multi-worker setups — force a fresh load
+        # from disk and retry once before giving up.
+        from app.services.matcher import _load_session_from_disk, _session_file
+        fresh = _load_session_from_disk(req.session_id)
+        if fresh is not None:
+            engine = fresh
+        # Re-check after force-reload
+        still_missing = [fid for fid in missing if fid not in engine.files]
+        if still_missing:
+            raise HTTPException(
+                400,
+                f"文件 {still_missing[0]} 未在会话中找到，"
+                f"请返回上一步确认文件已成功上传解析"
+            )
+
     for m in req.mappings:
-        if m.file_id not in engine.files:
-            raise HTTPException(400, f"File {m.file_id} not in session")
         engine.key_mappings[m.file_id] = m.key_columns
 
     # Persist to disk for cross-worker visibility

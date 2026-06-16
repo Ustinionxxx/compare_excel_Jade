@@ -111,6 +111,15 @@ export default function App() {
       pollingRef.current = null;
     }
 
+    // Guard: session must be ready before making API calls
+    if (!sessionId) {
+      setError('比对执行失败: 会话尚未初始化，请刷新页面重试');
+      setLoading(false);
+      setComparing(false);
+      setCompareProgress(null);
+      return;
+    }
+
     try {
       // Ensure mappings are in sync with actual uploaded files
       const validFileIds = new Set(files.map(f => f.file_id));
@@ -132,11 +141,44 @@ export default function App() {
         }
       }
 
-      await setColumnMapping(sessionId, mappingsToSend);
+      // Validate: every file must have at least one key column
+      const emptyMapping = mappingsToSend.find(m => m.key_columns.length === 0);
+      if (emptyMapping) {
+        setError(`比对执行失败: 文件 ${emptyMapping.file_id} 未设置主键列，请返回上一步设置`);
+        setLoading(false);
+        setComparing(false);
+        setCompareProgress(null);
+        return;
+      }
+
+      try {
+        await setColumnMapping(sessionId, mappingsToSend);
+      } catch (e: any) {
+        console.error('[compare] setColumnMapping failed:', e);
+        const detail = e.response?.data?.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+          : (detail || e.message || String(e));
+        setError(`设置主键映射失败: ${msg}`);
+        return;
+      }
+
       setCompareProgress({ stage: 'submitting', progress: 10, message: '提交比对任务...' });
 
       // Submit async compare task
-      const { task_id } = await executeCompareAsync(sessionId, columns, mode);
+      let task_id: string;
+      try {
+        const resp = await executeCompareAsync(sessionId, columns, mode);
+        task_id = resp.task_id;
+      } catch (e: any) {
+        console.error('[compare] executeCompareAsync failed:', e);
+        const detail = e.response?.data?.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+          : (detail || e.message || String(e));
+        setError(`提交比对任务失败: ${msg}`);
+        return;
+      }
 
       // Poll for progress
       await new Promise<void>((resolve, reject) => {
@@ -168,6 +210,7 @@ export default function App() {
         poll();
       });
     } catch (e: any) {
+      console.error('[compare] polling or unexpected error:', e);
       const msg = e.response?.data?.detail || e.message || String(e);
       setError('比对执行失败: ' + msg);
     } finally {
